@@ -37,6 +37,8 @@ type Props = {
 };
 
 const CLAIMS_KEY = "e_claims";
+// Grow with the answer so merged text ("From …: …") is visible without scrolling.
+const rowsFor = (v: string) => Math.min(14, Math.max(2, v.split("\n").length + Math.floor(v.length / 95)));
 const today = () => new Date().toISOString().slice(0, 10);
 
 export default function EditForm(props: Props) {
@@ -271,7 +273,7 @@ export default function EditForm(props: Props) {
                         aria-label={`${f.label}: reason for N/A`}
                       />
                     ) : f.kind === "text" ? (
-                      <textarea id={f.key} rows={2} value={(answers[f.key] as string) ?? ""} onChange={(e) => setText(f.key, e.target.value)} />
+                      <textarea id={f.key} rows={rowsFor((answers[f.key] as string) ?? "")} value={(answers[f.key] as string) ?? ""} onChange={(e) => setText(f.key, e.target.value)} />
                     ) : (
                       <TableEditor field={f} rows={table(f)} onChange={(rows) => setTable(f.key, rows)} />
                     )}
