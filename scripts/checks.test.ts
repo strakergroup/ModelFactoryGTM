@@ -5,6 +5,7 @@ import { backfillPairs, differsFor, gaOrBetaPairs, migrateAnswers, repointEviden
 import { effectiveAnswers, factorySig, inheritedValue, INHERITING } from "../lib/inherit";
 import { brokenReferences, checkPack, isStale, noteResolved, versionsIn, type CheckInput } from "../lib/checks";
 import { sourceLabel } from "../lib/fields";
+import { cardMarkdown, publicCard } from "../lib/card";
 
 const types = ["custom_mt", "customer_trained"];
 // Same pipeline as lib/store.ts: v1 -> v2 -> v3 -> v5, then Part A inheritance (empty Part A here).
@@ -197,6 +198,21 @@ test("migration notes clear when their condition is met", () => {
   assert.equal(noteResolved("B3 Domains and languages covered: move …", base, {}), false);
   assert.equal(noteResolved("B3 Domains and languages covered: move …", { ...base, b3_domains: "Contracts" }, {}), true);
   assert.equal(noteResolved("C1 Post-edit effort (removed): ...", base, {}), true);
+});
+
+test("public model card: Public only, pending for blocked fields, claim wording only, no merge labels", () => {
+  const issues = run();
+  const sections = publicCard({ kind: "model", modelTypes: types, answers: base, issues });
+  const mdText = cardMarkdown("arbitr Legal German", "Custom Language Model · Rev 3", sections);
+  assert.match(mdText, /\*\*Headline result:\*\* Pending approval/);
+  assert.match(mdText, /\*\*Claims register:\*\* Pending approval/); // blocked by the model mismatch
+  assert.doesNotMatch(mdText, /From [A-Z][^:]{2,40}:/);
+  for (const secret of ["legal-en-de-v2.1", "ARB-MDL", "1.8M", "Morgan", "0.87"]) assert.ok(!mdText.includes(secret), secret);
+  // With the claim fixed and approved, the register shows the claim wording only.
+  const fixed = { ...base, e_claims: [["Cuts post-editing time by about 40%", "legal-en-de-v2.1", "B4 Results row 3", "P", "Morgan", "19 Mar 2027", "b4_metrics#3"]] };
+  const card2 = cardMarkdown("x", "y", publicCard({ kind: "model", modelTypes: types, answers: fixed, issues: run({}, fixed) }));
+  assert.match(card2, /- Cuts post-editing time by about 40%/);
+  assert.ok(!card2.includes("B4 Results row 3") && !card2.includes("Morgan"));
 });
 
 console.log(`\n${passed} passed`);
