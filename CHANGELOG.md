@@ -1,5 +1,62 @@
 # Changelog
 
+## Schema v5 — 27 Sep 2026 (public view, Part A inheritance, workflow, editor)
+
+### Public-only view
+- Fields with a blocking flag show **Pending approval** instead of their text.
+- "From <field>:" merge labels are never shown; the claims register shows claim wording only.
+- **Copy as model card** (Markdown) and **Download PDF** (print page, "Save as PDF"): Public fields only, Launch-ready packs only. One generator (`lib/card.ts`) feeds all three.
+
+### Fields
+| Change | Tag |
+| :- | :- |
+| B1 "Model name and version" split into **Internal ID** | I · Required |
+| … and **External product name and version** | P · Required |
+| New **B8 Versioning policy** (inherits A8 Versioning) | P |
+| New **A10 Factory claims register** (Part A's own Part E) | P |
+| Part A Required: A1 Team name, One-line description; A3 Build time, Minimum data; A5 Isolation, Data residency; A6 Hosting, Model ownership; A7 Bias and fairness, Human oversight, Documentation; A8 Versioning; A9 Request process | — |
+| Model type "LLM Model" renamed **LLM**; each type shows which section it adds | — |
+
+Migration: B1 is split at "·" (the "external name:" prefix is dropped); both halves get a Needs review badge.
+
+### Part A inheritance
+Pack fields that repeat factory policy default to **Same as factory policy (Part A, …)**, showing the Part A answer read-only, with a **This model differs** toggle:
+
+| Pack field | Inherits |
+| :- | :- |
+| B7 Data handling | A5 Data residency + A6 Hosting (sub-processors stay NDA: "available under NDA") |
+| C4 Isolation | A5 Isolation |
+| C4 Ownership and exit | A6 Model ownership |
+| B5 Bias findings | A7 Bias and fairness |
+| B2 Oversight and assurance | A7 Human oversight |
+| D3 Deliverables and reporting | A7 Documentation |
+| C4 Time to first model | A3 Build time |
+| C4 Data we need | A3 Minimum data |
+| B8 Versioning policy | A8 Versioning |
+
+- Existing answers are kept as "This model differs", with a flag offering **Use factory policy**.
+- Publishing freezes the inherited Part A text into the Rev; each sign-off records the Part A answers it saw. Changing a Part A answer makes those sign-offs **stale** and sends Launch-ready inheriting packs back to review.
+- Part A now has the Required/Optional counter, claim checks (against A10), visibility checks and stale sign-off handling.
+
+### Checks
+- **Visibility conflict (repeated text):** a Public sentence of 5+ words, or a 6-word run, that repeats NDA or Internal text in the same pack. Blocks.
+- **Pack title doesn't match B1:** a version in the title that isn't B1's. Review flag.
+- B1's version (for claim and title checks) comes from Internal ID and External product name.
+
+### Workflow
+- New **Marketing** sign-off (positioning, claims wording, assets). Launch-ready needs all five.
+- Home copy: "Launch-ready when there are no blocking issues and all sign-offs are on the latest Rev."
+- Every count names its version ("Draft: 11 blocking", "Published Rev 2: 11 blocking").
+- Migration banner items clear automatically when their condition is met.
+
+### Editor
+- Sticky section menu (B1–E) with a count of fields needing action per section, and **Show only fields needing action**.
+- Save status stays in the sticky bar; leaving with unsaved edits asks first.
+- Missing Required fields are grey until the first publish attempt, then red.
+
+### Housekeeping
+- **Archive pack / Restore** (open to anyone until Gmail sign-in adds admins).
+
 ## Polish — 27 Sep 2026 (schema v4)
 
 | # | Change | Behaviour |

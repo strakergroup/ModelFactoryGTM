@@ -321,3 +321,32 @@ td.review-cell input { border-color: #e8a33d; background: #fff8ec; }
   td.review-cell input { background: #2a2012; }
 }
 .source-link { font-size: 13px; white-space: nowrap; }
+
+/* Public card, inheritance, section menu */
+.pending { color: #a15c07; font-weight: 600; font-style: italic; margin: 4px 0; }
+.claims-list { margin: 4px 0; padding-left: 20px; }
+.card-page { padding: 24px 16px; }
+@media print {
+  .no-print, .topbar { display: none !important; }
+  body { background: #fff; }
+  .review-field, .table-wrap { border-color: #ddd; break-inside: avoid; }
+}
+.inherited { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); }
+.inherited-label { font-size: 12px; font-weight: 700; color: var(--accent); margin: 0 0 4px; }
+.differs-toggle { margin: 4px 0 8px; }
+.flag-neutral { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+.section-menu { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; padding-top: 8px; }
+.section-menu a { font-size: 12px; font-weight: 600; text-decoration: none; padding: 3px 8px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); display: inline-flex; gap: 4px; align-items: center; }
+.section-menu a.has-issues { background: #fdecec; color: #b42318; }
+.section-menu .count { font-size: 11px; background: #b42318; color: #fff; border-radius: 999px; padding: 0 6px; }
+.section-menu .only-action { margin-left: auto; }
+.section { scroll-margin-top: 150px; }
+.field { scroll-margin-top: 150px; }
+.type-adds { font-size: 12px; color: var(--muted); margin: -4px 0 4px 26px; }
+.archived-list { margin-top: 24px; }
+@media (prefers-color-scheme: dark) {
+  .section-menu a.has-issues { background: #3a1c1c; color: #ffb4ab; }
+}
+.issue-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.count-bad { color: #b42318; font-weight: 600; }
+.count-ok { color: #1f7a3d; }

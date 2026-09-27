@@ -5,7 +5,8 @@ import { SPLIT_REASON_MIN, type Answers, type NA } from "./fields";
 import { blocking, checkPack, isStale } from "./checks";
 import { MODEL_TYPES, SIGNOFF_ROLES } from "./fields";
 import { requireName } from "./session";
-import { ConflictError, currentSignoffs, deletePackFile, getPack, newPack, savePack, type Pack } from "./store";
+import { ConflictError, currentSignoffs, deletePackFile, FACTORY_ID, getPack, listPacks, newPack, savePack, type Pack, type Version } from "./store";
+import { effectiveAnswers, factorySig, INHERITING, revEffective } from "./inherit";
 
 const now = () => new Date().toISOString();
 const back = (id: string, error: string) => redirect(`/packs/${id}?error=${encodeURIComponent(error)}`);
@@ -45,7 +46,7 @@ export async function saveDraft(
   etag: string,
   meta?: { name: string; modelTypes: string[]; otherType: string },
   na?: NA,
-  review?: { fields: string[]; cells: string[]; events: { action: string; detail?: string }[] },
+  review?: { fields: string[]; cells: string[]; events: { action: string; detail?: string }[]; differs?: string[]; suggest?: string[] },
 ): Promise<{ ok: true; etag: string; at: string } | { ok: false; error: string }> {
   const by = await requireName();
   const found = await getPack(id);
@@ -61,7 +62,13 @@ export async function saveDraft(
     pack.reviewFields = (pack.reviewFields ?? []).filter((k) => review.fields.includes(k));
     pack.reviewCells = (pack.reviewCells ?? []).filter((k) => review.cells.includes(k));
     for (const e of review.events.slice(0, 20)) pack.activity.push({ at: now(), by, action: e.action.slice(0, 200), detail: e.detail?.slice(0, 1000) });
+    if (review.differs && pack.kind === "model") {
+      const inheriting = INHERITING().map((f) => f.key);
+      pack.differs = review.differs.filter((k) => inheriting.includes(k));
+    }
+    if (review.suggest) pack.suggestInherit = (pack.suggestInherit ?? []).filter((k) => review.suggest!.includes(k));
   }
+  const inheritedBefore = pack.kind === "factory" ? factorySig([], pack.answers) : "";
   if (meta && pack.kind === "model") {
     pack.name = meta.name.trim() || "Untitled model";
     // Answers for a type that's unticked are kept, just hidden, so re-ticking it brings them back.
@@ -72,7 +79,10 @@ export async function saveDraft(
   pack.updatedBy = by;
   try {
     // Checked against the version this browser loaded, so a colleague's newer save is never overwritten.
-    return { ok: true, etag: await savePack(pack, etag), at: pack.updatedAt };
+    const saved = await savePack(pack, etag);
+    // A Part A policy change makes sign-offs on inheriting packs stale.
+    if (pack.kind === "factory" && factorySig([], pack.answers) !== inheritedBefore) await factoryChanged(pack.answers, by);
+    return { ok: true, etag: saved, at: pack.updatedAt };
   } catch (e) {
     return { ok: false, error: e instanceof ConflictError ? e.message : "Couldn't save. Check your connection and try again." };
   }
@@ -95,8 +105,10 @@ export async function publishPack(formData: FormData) {
   const id = String(formData.get("id"));
   const by = await requireName();
   let version = 0;
+  const factory = (await getPack(FACTORY_ID))?.pack.answers ?? {};
   const rev = await update(id, (p) => {
     if (p.status !== "draft" && p.status !== "changes_requested") return "This pack is already published.";
+    p.publishAttempted = true;
     version = p.version + 1;
     if (p.modelTypes.includes("other") && !p.otherType?.trim()) return "You ticked Other: type what kind of model it is before publishing.";
     p.versions.push({
@@ -104,9 +116,12 @@ export async function publishPack(formData: FormData) {
       name: p.name,
       modelTypes: p.modelTypes,
       otherType: p.otherType,
-      answers: p.answers,
+      // Inherited Part A text is frozen into the Rev, so reviewers sign what they see.
+      answers: p.kind === "model" ? effectiveAnswers(p.answers, p.differs, factory) : p.answers,
       na: p.na,
       splitOverride: p.splitOverride,
+      differs: p.differs,
+      factorySig: p.kind === "model" ? factorySig(p.differs, factory) : undefined,
       publishedBy: by,
       publishedAt: now(),
     });
@@ -120,7 +135,7 @@ export async function publishPack(formData: FormData) {
       p.needsReview = false;
       p.migrationNotes = [];
     }
-    const open = blocking(checkOf(p));
+    const open = blocking(checkOf(p, factory));
     p.activity.push({ at: now(), by, action: `published Rev ${version}`, detail: open.length ? `${open.length} blocking issue(s) still open` : undefined });
   });
   redirect(`/packs/${id}?published=${version}&rev=${rev}`);
@@ -160,21 +175,22 @@ export async function signOff(formData: FormData) {
   const by = await requireName();
   const label = SIGNOFF_ROLES.find((r) => r.role === role)?.label;
   if (!label) back(id, "Unknown sign-off role.");
+  const factory = (await getPack(FACTORY_ID))?.pack.answers ?? {};
   const rev = await update(id, (p) => {
     if (p.status !== "in_review") return "Only packs in review can be signed off.";
+    const sig = p.kind === "model" ? factorySig(revOf(p)?.differs ?? p.differs, factory) : undefined;
     const fresh = () => {
-      const revBlocked = blocking(checkOf(p)).length > 0;
-      return currentSignoffs(p).filter((s) => !isStale(s.at, p.migratedAt, revBlocked));
+      const revBlocked = blocking(checkOf(p, factory)).length > 0;
+      return currentSignoffs(p).filter((s) => !isStale(s.at, p.migratedAt, revBlocked, Boolean(s.factorySig && s.factorySig !== sig)));
     };
     if (fresh().some((s) => s.role === role)) return `${label} has already signed off Rev ${p.version}.`;
-    p.signoffs.push({ version: p.version, role, by, note, at: now() });
+    p.signoffs.push({ version: p.version, role, by, note, at: now(), factorySig: sig });
     p.activity.push({ at: now(), by, action: `signed off Rev ${p.version} as ${label}`, detail: note ?? undefined });
-    // Launch-ready needs all four sign-offs AND no blocking issues on the published Rev.
-    // Only sign-offs that aren't stale count towards Launch-ready.
+    // Launch-ready needs every sign-off (not stale) AND no blocking issues on the published Rev.
     if (new Set(fresh().map((s) => s.role)).size === SIGNOFF_ROLES.length) {
-      const open = blocking(checkOf(p));
+      const open = blocking(checkOf(p, factory));
       if (open.length) {
-        p.activity.push({ at: now(), by: "System", action: `Rev ${p.version} has all four sign-offs but can't be launch-ready`, detail: `${open.length} blocking issue(s)` });
+        p.activity.push({ at: now(), by: "System", action: `Rev ${p.version} has all sign-offs but can't be launch-ready`, detail: `${open.length} blocking issue(s)` });
       } else {
         p.status = "launch_ready";
         p.activity.push({ at: now(), by: "System", action: `Rev ${p.version} is launch-ready` });
@@ -221,16 +237,55 @@ export async function deleteDraft(formData: FormData) {
   redirect("/");
 }
 
+const revOf = (p: Pack): Version | undefined => p.versions.find((x) => x.version === p.version);
+
 // Checks for the latest published Rev (what reviewers signed).
-function checkOf(p: Pack) {
-  const v = p.versions.find((x) => x.version === p.version);
+function checkOf(p: Pack, factory: Answers) {
+  const v = revOf(p);
+  const answers = v ? revEffective(v, factory) : effectiveAnswers(p.answers, p.differs, factory);
   return checkPack({
     kind: p.kind,
     modelTypes: v?.modelTypes ?? p.modelTypes,
-    answers: v?.answers ?? p.answers,
+    answers: p.kind === "model" ? answers : v?.answers ?? p.answers,
     na: v?.na ?? p.na,
     splitOverride: v ? v.splitOverride : p.splitOverride,
+    name: v?.name ?? p.name,
   });
+}
+
+// Part A changed: launch-ready packs whose inherited answers changed go back to review.
+async function factoryChanged(factory: Answers, by: string) {
+  for (const p of await listPacks()) {
+    if (p.kind !== "model" || p.status !== "launch_ready") continue;
+    const v = revOf(p);
+    if (!v?.factorySig || v.factorySig === factorySig(v.differs, factory)) continue;
+    await update(p.id, (q) => {
+      q.status = "in_review";
+      q.activity.push({ at: now(), by, action: "Part A policy changed: sign-offs are stale, back to review" });
+    });
+  }
+}
+
+// Archive hides a pack from the home page; it can be restored.
+export async function archivePack(formData: FormData) {
+  const id = String(formData.get("id"));
+  const by = await requireName();
+  await update(id, (p) => {
+    if (p.kind === "factory") return "The factory fact sheet can't be archived.";
+    p.archived = { by, at: now() };
+    p.activity.push({ at: now(), by, action: "archived the pack" });
+  });
+  redirect("/?archived=1");
+}
+
+export async function restorePack(formData: FormData) {
+  const id = String(formData.get("id"));
+  const by = await requireName();
+  const rev = await update(id, (p) => {
+    p.archived = undefined;
+    p.activity.push({ at: now(), by, action: "restored the pack" });
+  });
+  redirect(`/packs/${id}?rev=${rev}`);
 }
 
 // Keep a shared model and a customer-trained build in one pack, with a reason.

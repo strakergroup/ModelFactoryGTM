@@ -1,6 +1,7 @@
 import { BlobPreconditionFailedError, del, get, list, put } from "@vercel/blob";
 import { fieldLabel, SCHEMA_VERSION, sectionOf, type Answers, type NA } from "./fields";
-import { backfillPairs, migrateAnswers, REMOVED, renameRevs, repointEvidence, reviewTargets, sourceWithRow } from "./migrate";
+import { backfillPairs, differsFor, migrateAnswers, REMOVED, renameRevs, repointEvidence, reviewTargets, sourceWithRow, splitB1 } from "./migrate";
+import { INHERITING } from "./inherit";
 
 // Each pack is one private JSON file in Vercel Blob: packs/<id>.json.
 // Writes use the file's ETag (ifMatch), so two people saving at once can't
@@ -13,14 +14,16 @@ export type Version = {
   name: string;
   modelTypes: string[];
   otherType?: string;
-  answers: Answers;
+  answers: Answers; // effective answers at publish: inherited Part A text is frozen in
   na?: NA;
   splitOverride?: SplitOverride;
+  differs?: string[];
+  factorySig?: string; // Part A answers this Rev inherited (see lib/inherit.ts)
   publishedBy: string;
   publishedAt: string;
 };
 export type Comment = { id: string; field: string; version: number; body: string; by: string; at: string; resolved: boolean };
-export type SignOff = { version: number; role: string; by: string; note: string | null; at: string };
+export type SignOff = { version: number; role: string; by: string; note: string | null; at: string; factorySig?: string };
 export type Activity = { at: string; by: string; action: string; detail?: string };
 // Saved reason for keeping a shared model and a customer-trained build in one pack.
 export type SplitOverride = { reason: string; by: string; at: string };
@@ -43,6 +46,10 @@ export type Pack = {
   reviewCells?: string[]; // "b4_metrics:<row>:<col>" cells filled by backfill, until edited
   // Edits the system made to the draft since the last publish (one per field).
   systemChanges?: { at: string; what: string }[];
+  differs?: string[]; // inheriting fields where "This model differs" from Part A
+  suggestInherit?: string[]; // kept answers that might match Part A; review flag
+  publishAttempted?: boolean; // missing Required fields turn red after this
+  archived?: { by: string; at: string };
   version: number; // latest published version, 0 = never published
   versions: Version[];
   comments: Comment[];
@@ -131,6 +138,30 @@ async function migrate(pack: Pack, etag: string): Promise<{ pack: Pack; etag: st
     );
     if (!pack.systemChanges && pack.migratedAt) pack.systemChanges = seedSystemChanges(pack);
   }
+  // v4 -> v5: split B1; answered inheriting fields keep their answer as "This model differs".
+  if ((pack.schemaVersion ?? 1) < 5 && pack.kind === "model") {
+    const b = splitB1(pack.answers);
+    pack.answers = b.answers;
+    pack.versions = pack.versions.map((v) => ({ ...v, answers: splitB1(v.answers).answers }));
+    const e = repointEvidence(pack.answers);
+    pack.answers = e.answers;
+    const inheriting = INHERITING().map((f) => f.key);
+    const kept = differsFor(pack.answers, inheriting);
+    pack.differs = kept;
+    pack.suggestInherit = kept;
+    pack.versions = pack.versions.map((v) => ({ ...v, differs: v.differs ?? differsFor(v.answers, inheriting) }));
+    const changes: string[] = [];
+    if (b.split) {
+      changes.push("B1: “Model name and version” split into Internal ID and External product name and version");
+      pack.reviewFields = [...new Set([...(pack.reviewFields ?? []), "b1_internal_id", "b1_external_name"])];
+    }
+    for (const r of e.repoints) changes.push(`E Claims register: evidence repointed: “${r.from}” → “${r.to}”`);
+    for (const k of kept) changes.push(`${sectionOf(k)} ${fieldLabel(k)}: kept as “This model differs” from Part A`);
+    if (changes.length) {
+      pack.systemChanges = [...(pack.systemChanges ?? []), ...changes.map((what) => ({ at, what }))];
+      pack.activity.push({ at, by: "System", action: "applied schema v5 (B1 split, factory policy inheritance)", detail: changes.join(" | ") });
+    }
+  }
   pack.schemaVersion = SCHEMA_VERSION;
   try {
     return { pack, etag: await savePack(pack, etag) };
@@ -141,7 +172,7 @@ async function migrate(pack: Pack, etag: string): Promise<{ pack: Pack; etag: st
   }
 }
 
-export async function listPacks(): Promise<Pack[]> {
+export async function listPacks(includeArchived = false): Promise<Pack[]> {
   const { blobs } = await list({ prefix: "packs/" });
   const ids = blobs.map((b) => b.pathname.replace(/^packs\/|\.json$/g, ""));
   if (!ids.includes(FACTORY_ID)) ids.unshift(FACTORY_ID);
@@ -149,6 +180,7 @@ export async function listPacks(): Promise<Pack[]> {
   return packs
     .filter((p): p is { pack: Pack; etag: string } => p !== null)
     .map((p) => p.pack)
+    .filter((p) => includeArchived || !p.archived)
     .sort((a, b) => (a.kind === b.kind ? b.updatedAt.localeCompare(a.updatedAt) : a.kind === "factory" ? -1 : 1));
 }
 
@@ -244,3 +276,5 @@ function seedSystemChanges(pack: Pack): { at: string; what: string }[] {
   }
   return out;
 }
+
+export const listArchived = async () => (await listPacks(true)).filter((p) => p.archived);

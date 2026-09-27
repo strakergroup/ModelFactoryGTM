@@ -1,14 +1,20 @@
 // Rule tests for lib/checks.ts. Run: npx tsx scripts/checks.test.ts
 import assert from "node:assert/strict";
 import sample from "./sample-v1.json";
-import { backfillPairs, gaOrBetaPairs, migrateAnswers, repointEvidence, reviewTargets, stripFromLabels } from "../lib/migrate";
-import { brokenReferences, checkPack, isStale, versionsIn, type CheckInput } from "../lib/checks";
+import { backfillPairs, differsFor, gaOrBetaPairs, migrateAnswers, repointEvidence, reviewTargets, splitB1, stripFromLabels } from "../lib/migrate";
+import { effectiveAnswers, factorySig, inheritedValue, INHERITING } from "../lib/inherit";
+import { brokenReferences, checkPack, isStale, noteResolved, versionsIn, type CheckInput } from "../lib/checks";
 import { sourceLabel } from "../lib/fields";
 
 const types = ["custom_mt", "customer_trained"];
-const base = backfillPairs(repointEvidence(migrateAnswers(sample as never).answers).answers).answers;
+// Same pipeline as lib/store.ts: v1 -> v2 -> v3 -> v5, then Part A inheritance (empty Part A here).
+const migrated = splitB1(backfillPairs(repointEvidence(migrateAnswers(sample as never).answers).answers).answers).answers;
+const inheriting = INHERITING().map((f) => f.key);
+const differs = differsFor(migrated, inheriting);
+const base = effectiveAnswers(migrated, differs, {});
+const TITLE = "SAMPLE – Legal EN→DE engine v2";
 const run = (patch: Partial<CheckInput> = {}, answers = base) =>
-  checkPack({ kind: "model", modelTypes: types, answers, today: "2026-09-27", ...patch });
+  checkPack({ kind: "model", modelTypes: types, answers, today: "2026-09-27", name: TITLE, ...patch });
 const kinds = (issues: ReturnType<typeof run>, key: string) => issues.filter((i) => i.key === key).map((i) => i.kind).sort();
 let passed = 0;
 const test = (name: string, fn: () => void) => { fn(); passed++; console.log("ok -", name); };
@@ -23,12 +29,12 @@ test("sample flags exactly the expected issues", () => {
   assert.deepEqual(kinds(i, "c4_uplift"), ["claim", "scale"]);
   assert.deepEqual(kinds(i, "d1_margin"), ["required"]);
   assert.deepEqual(kinds(i, "b7_data_handling"), ["required"]);
-  assert.deepEqual(kinds(i, "_pack"), ["split"]);
+  assert.deepEqual(kinds(i, "_pack"), ["split", "title"]);
   assert.deepEqual(kinds(i, "b6_latency"), ["spec"]);
   assert.deepEqual(kinds(i, "b3_domains"), ["placement"]);
   assert.deepEqual(kinds(i, "b5_error_modes"), ["llm"]);
   assert.deepEqual(kinds(i, "e_claims"), ["model"]);
-  assert.equal(i.length, 14);
+  assert.equal(i.length, 15);
 });
 
 test("an approved claim clears the headline's claim and visibility flags", () => {
@@ -52,7 +58,7 @@ test("an expired B4 row blocks", () => {
 });
 
 test("the two-product warning clears with an override reason", () => {
-  assert.deepEqual(kinds(run({ splitOverride: { reason: "Sold as one SKU with an optional build" } }), "_pack"), []);
+  assert.deepEqual(kinds(run({ splitOverride: { reason: "Sold as one SKU with an optional build" } }), "_pack"), ["title"]);
 });
 
 test("dates, versions, specs and TM '100% matches' are not claims", () => {
@@ -68,7 +74,7 @@ test("comparison words need a claim", () => {
 
 test("migration drops nothing: every old answer's text survives somewhere", () => {
   const m = migrateAnswers(sample as never);
-  const all = JSON.stringify(m.answers) + JSON.stringify(m.notes);
+  const all = JSON.stringify(m.answers) + JSON.stringify(m.notes) + JSON.stringify(migrated);
   for (const [k, v] of Object.entries(sample)) {
     if (typeof v === "string") assert.ok(all.includes(JSON.stringify(v).slice(1, -1)), `lost ${k}`);
   }
@@ -138,8 +144,59 @@ test("a claim for a different model version blocks; matching or factory-wide cla
 });
 
 test("keeping two products in one pack needs a 20+ character reason", () => {
-  assert.deepEqual(kinds(run({ splitOverride: { reason: "One SKU" } }), "_pack"), ["split"]);
-  assert.deepEqual(kinds(run({ splitOverride: { reason: "Sold under one SKU with an optional build fee" } }), "_pack"), []);
+  assert.deepEqual(kinds(run({ splitOverride: { reason: "One SKU" } }), "_pack"), ["split", "title"]);
+  assert.deepEqual(kinds(run({ splitOverride: { reason: "Sold under one SKU with an optional build fee" } }), "_pack"), ["title"]);
+});
+
+test("B1 splits into Internal ID and External product name", () => {
+  assert.equal(migrated.b1_internal_id, "legal-en-de-v2.1");
+  assert.equal(migrated.b1_external_name, "arbitr Legal German");
+  assert.equal(migrated.b1_name_version, undefined);
+});
+
+test("title version that doesn't match B1 is flagged, not blocking", () => {
+  const t = run().find((i) => i.kind === "title")!;
+  assert.equal(t.blocking, false);
+  assert.deepEqual(kinds(run({ name: "SAMPLE – Legal EN→DE engine v2.1" }), "_pack"), ["split"]);
+});
+
+test("public text repeating NDA/Internal text is a visibility conflict", () => {
+  const a = { ...base, b3_domains: "Contracts and privacy. Very long sentences of sixty words or more with Swiss legal terms", b5_weaknesses: "Very long sentences of sixty words or more with Swiss legal terms, nested defined terms" };
+  const v = run({}, a).filter((i) => i.key === "b3_domains" && i.kind === "visibility");
+  assert.equal(v.length, 1);
+  assert.match(v[0].message, /B5 Known weaknesses and gaps \(Under NDA\)/);
+});
+
+test("answered inheriting fields keep their answer; empty ones inherit Part A", () => {
+  assert.ok(differs.includes("c4_isolation") && differs.includes("b2_oversight_assurance"));
+  assert.ok(!differs.includes("b7_data_handling"));
+  const factory = { a5_residency: "EU (Frankfurt)", a6_hosting: "AWS eu-central-1, single-tenant option" };
+  assert.equal(inheritedValue("b7_data_handling", factory), "Data residency: EU (Frankfurt)\nHosting: AWS eu-central-1, single-tenant option\nSub-processors: available under NDA (Part A, A5 Sub-processors).");
+  const eff = effectiveAnswers(migrated, differs, factory);
+  assert.deepEqual(kinds(run({}, eff), "b7_data_handling"), []);
+});
+
+test("a Part A change makes inheriting sign-offs stale", () => {
+  const before = factorySig(differs, { a5_residency: "EU" });
+  const after = factorySig(differs, { a5_residency: "EU and US" });
+  assert.notEqual(before, after);
+  assert.equal(factorySig(differs, { a1_team_name: "x" }), factorySig(differs, { a1_team_name: "y" })); // not inherited
+  assert.equal(isStale("2026-09-28T10:00:00Z", undefined, false, before !== after), true);
+});
+
+test("Part A gets required, claim and visibility checks against its own claims register", () => {
+  const f = checkPack({ kind: "factory", modelTypes: [], answers: { a1_differentiator: "We are 30% faster than DeepL", a4_release_gate: "COMET must beat 0.84" , a4_reeval: "Quarterly, release gate COMET must beat 0.84 on held-out set" } });
+  assert.ok(f.some((i) => i.key === "a1_differentiator" && i.kind === "claim" && /A10 Factory claims register/.test(i.message)));
+  assert.ok(f.some((i) => i.key === "a4_reeval" && i.kind === "visibility"));
+  assert.ok(f.some((i) => i.key === "a9_request_process" && i.kind === "required"));
+});
+
+test("migration notes clear when their condition is met", () => {
+  assert.equal(noteResolved("D3 Request process (removed): ...", base, { a9_request_process: "Rep requests…" }), true);
+  assert.equal(noteResolved("D3 Request process (removed): ...", base, {}), false);
+  assert.equal(noteResolved("B3 Domains and languages covered: move …", base, {}), false);
+  assert.equal(noteResolved("B3 Domains and languages covered: move …", { ...base, b3_domains: "Contracts" }, {}), true);
+  assert.equal(noteResolved("C1 Post-edit effort (removed): ...", base, {}), true);
 });
 
 console.log(`\n${passed} passed`);

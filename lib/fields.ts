@@ -2,7 +2,7 @@
 // Schema v2 (27 Sep 2026): merged duplicates, Required/Optional per field,
 // type-dependent help. See CHANGELOG.md. To add a field, add one line here.
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export type Tag = "P" | "N" | "I";
 export const TAG_LABEL: Record<Tag, string> = { P: "Public", N: "Under NDA", I: "Internal" };
@@ -25,6 +25,8 @@ type Common = {
   showFor?: string; // only shown when this model type is active
   // A measured spec: any number in it must say what it was measured under.
   measured?: boolean;
+  // Defaults to the factory policy (Part A) unless the pack says "This model differs".
+  inherits?: { keys: string[]; note?: string };
   subOf?: string; // rendered as an indented sub-note under another field
 };
 export type TextField = Common & { kind: "text" };
@@ -45,11 +47,11 @@ const req = { required: true };
 const col = (name: string, extra: Omit<Column, "name"> = {}): Column => ({ name, ...extra });
 
 export const MODEL_TYPES = [
-  { id: "custom_mt", label: "Custom Language Model" },
-  { id: "quality_risk", label: "Quality / Risk Model" },
-  { id: "llm", label: "LLM Model" },
-  { id: "customer_trained", label: "Custom Customer Model" },
-  { id: "other", label: "Other" }, // free text in Pack.otherType; no extra questions
+  { id: "custom_mt", label: "Custom Language Model", adds: "Adds C1: language pairs, locales, terminology, TM and migration fit." },
+  { id: "quality_risk", label: "Quality / Risk Model", adds: "Adds C2: what it scores, detection accuracy, calibration and routing." },
+  { id: "llm", label: "LLM", adds: "Adds C3: tasks, guardrails, hallucination, grounding and prompt injection." },
+  { id: "customer_trained", label: "Custom Customer Model", adds: "Adds C4: data needed, time to first model, uplift, isolation and exit." },
+  { id: "other", label: "Other", adds: "No extra section. Describe the type in a few words." }, // free text in Pack.otherType
 ] as const;
 
 export const SCALES = ["0–1", "0–100", "minutes", "%"];
@@ -63,8 +65,8 @@ export const FACTORY_PARTS: Part[] = [
         id: "A1",
         title: "A1. Team and capability",
         fields: [
-          t("a1_team_name", "Team name", "Current name and the external-facing name once chosen", "P"),
-          t("a1_one_line", "One-line description", "What the factory does, in under 25 words, no jargon", "P"),
+          t("a1_team_name", "Team name", "Current name and the external-facing name once chosen", "P", { required: true }),
+          t("a1_one_line", "One-line description", "What the factory does, in under 25 words, no jargon", "P", { required: true }),
           t("a1_produce", "What we produce", "Model types built (MT, quality/risk, LLM, customer-trained)", "P"),
           t("a1_track_record", "Track record", "Models shipped to production, years operating, volume processed per month", "P"),
           t("a1_coverage", "Coverage", "Languages, language pairs and content domains supported today", "N"),
@@ -80,8 +82,8 @@ export const FACTORY_PARTS: Part[] = [
           t("a3_training", "Training approach", "From scratch, full fine-tune, adapters/LoRA, distillation, retrieval-augmented", "N"),
           t("a3_data_sources", "Data sources", "Public corpora, licensed data, synthetic data, customer data — with proportions", "N"),
           t("a3_feedback", "Learning from feedback", "How human-in-the-loop edits and Cortex content feed retraining, and how often", "P"),
-          t("a3_build_time", "Build time", "Typical weeks from request to production model", "P"),
-          t("a3_min_data", "Minimum data", "Smallest customer dataset that produces a measurable gain", "P"),
+          t("a3_build_time", "Build time", "Typical weeks from request to production model", "P", { required: true }),
+          t("a3_min_data", "Minimum data", "Smallest customer dataset that produces a measurable gain", "P", { required: true }),
           t("a3_compute", "Compute and cost", "Training and inference infrastructure, cost per model build", "I"),
         ],
       },
@@ -102,9 +104,9 @@ export const FACTORY_PARTS: Part[] = [
         title: "A5. Data governance and privacy",
         fields: [
           t("a5_customer_data", "Customer data in training", "Is customer data ever used to train shared models? Opt-in or opt-out?", "P"),
-          t("a5_isolation", "Isolation", "How one customer's data and models are separated from another's", "P"),
+          t("a5_isolation", "Isolation", "How one customer's data and models are separated from another's", "P", { required: true }),
           t("a5_retention", "Retention and deletion", "How long training data is kept; how a customer deletes data and models", "P"),
-          t("a5_residency", "Data residency", "Where data is stored and processed; regional options", "P"),
+          t("a5_residency", "Data residency", "Where data is stored and processed; regional options", "P", { required: true }),
           t("a5_pii", "Personal data", "How PII is detected, removed or masked before training", "N"),
           t("a5_provenance", "Provenance and licensing", "Proof we have the right to use each training source", "N"),
           t("a5_subprocessors", "Sub-processors", "Third parties that touch training or inference data", "N"),
@@ -114,11 +116,11 @@ export const FACTORY_PARTS: Part[] = [
         id: "A6",
         title: "A6. Security and hosting",
         fields: [
-          t("a6_hosting", "Hosting", "Cloud provider, regions, single-tenant or dedicated options", "P"),
+          t("a6_hosting", "Hosting", "Cloud provider, regions, single-tenant or dedicated options", "P", { required: true }),
           t("a6_certs", "Certifications", "SOC 2 status and date, ISO, other attestations", "P"),
           t("a6_encryption", "Encryption", "At rest and in transit; key management", "N"),
           t("a6_access", "Access control", "Who can access models, weights and training data; audit logging", "N"),
-          t("a6_ownership", "Model ownership", "Who owns customer-trained weights; export or portability rights", "P"),
+          t("a6_ownership", "Model ownership", "Who owns customer-trained weights; export or portability rights", "P", { required: true }),
           t("a6_sec_testing", "Security testing", "Penetration tests, adversarial and prompt-injection testing, last date", "N"),
         ],
       },
@@ -128,10 +130,10 @@ export const FACTORY_PARTS: Part[] = [
         fields: [
           t("a7_eu_ai_act", "EU AI Act", "Risk classification per model type; transparency obligations we meet", "P"),
           t("a7_gdpr", "GDPR", "Lawful basis for training data; DPA availability", "P"),
-          t("a7_bias", "Bias and fairness", "What we test for (e.g. gender, formality, dialect) and results", "N"),
-          t("a7_oversight", "Human oversight", "How models run under arbitr assurance levels and human review", "P"),
+          t("a7_bias", "Bias and fairness", "What we test for (e.g. gender, formality, dialect) and results", "N", { required: true }),
+          t("a7_oversight", "Human oversight", "How models run under arbitr assurance levels and human review", "P", { required: true }),
           t("a7_incidents", "Incident process", "How model failures are reported, triaged and disclosed to customers", "N"),
-          t("a7_docs", "Documentation", "Which artefacts a customer can request (model card, eval report, DPIA input)", "P"),
+          t("a7_docs", "Documentation", "Which artefacts a customer can request (model card, eval report, DPIA input)", "P", { required: true }),
         ],
       },
       {
@@ -140,21 +142,39 @@ export const FACTORY_PARTS: Part[] = [
         fields: [
           t("a8_availability", "Availability", "Uptime target or SLA for hosted models", "P"),
           t("a8_monitoring", "Monitoring", "How we detect quality drift and regressions in production", "N"),
-          t("a8_versioning", "Versioning", "How versions are numbered, announced and rolled back", "P"),
+          t("a8_versioning", "Versioning", "How versions are numbered, announced and rolled back", "P", { required: true }),
           t("a8_deprecation", "Deprecation", "Notice period before a model version is retired", "P"),
           t("a8_support", "Support", "Channels, hours, response targets, escalation path", "P"),
+        ],
+      },
+      {
+        id: "A10",
+        title: "A10. Factory claims register",
+        fields: [
+          {
+            kind: "table",
+            key: "a10_claims",
+            label: "Factory claims register",
+            help:
+              "Claims about the factory as a whole (not one model). Same rule as Part E: a Public field in Part A that states a result, an improvement or a comparison needs an approved claim here (Evidence + Approved by).",
+            tag: "P",
+            columns: [
+              { name: "Claim (exact wording)" },
+              { name: "Model or factory" },
+              { name: "Evidence (section + test set)" },
+              { name: "Tag" },
+              { name: "Approved by" },
+              { name: "Review by" },
+              { name: "Source field" },
+            ],
+          },
         ],
       },
       {
         id: "A9",
         title: "A9. Factory-wide settings",
         fields: [
-          t(
-            "a9_request_process",
-            "Request process",
-            "Where a customer or rep requests a model, who picks it up, and response time. Shown read-only in D3 of every model pack.",
-            "P",
-          ),
+          t("a9_request_process", "Request process", "Where a customer or rep requests a model, who picks it up, and response time. Shown read-only in D3 of every model pack.", "P", { required: true }),
         ],
       },
     ],
@@ -170,7 +190,8 @@ export const MODEL_PARTS: Part[] = [
         id: "B1",
         title: "B1. Identity",
         fields: [
-          t("b1_name_version", "Model name and version", "Internal ID and external product name", "P", req),
+          t("b1_internal_id", "Internal ID", "The model's internal identifier and version, e.g. legal-en-de-v2.1", "I", req),
+          t("b1_external_name", "External product name and version", "The name and version customers see, e.g. arbitr Legal German v2.1", "P", req),
           t("b1_status", "Status", "Research, Beta or GA, and GA date", "P", req),
           t("b1_owner", "Owner", "Accountable person on the model team", "I", req),
           t("b1_base_model", "Base model", "Foundation model, version and licence", "N", req),
@@ -184,13 +205,7 @@ export const MODEL_PARTS: Part[] = [
           t("b2_use_cases", "Primary use cases", "The jobs this model is built for, most important first", "P", req),
           t("b2_customers", "Target customers", "Industries, content types and teams it suits best", "P", req),
           t("b2_out_of_scope", "Out of scope", "Uses we do not support or recommend (e.g. unreviewed legal or medical publishing)", "P", req),
-          t(
-            "b2_oversight_assurance",
-            "Oversight and assurance",
-            "The minimum arbitr assurance level, the assurance levels it is approved for, and the human review we recommend",
-            "P",
-            req,
-          ),
+          t("b2_oversight_assurance", "Oversight and assurance", "The minimum arbitr assurance level, the assurance levels it is approved for, and the human review we recommend", "P", { required: true, inherits: { keys: ["a7_oversight"] } }),
         ],
       },
       {
@@ -246,12 +261,10 @@ export const MODEL_PARTS: Part[] = [
           t("b5_error_modes", "Error modes", "The most common error types, with an example of each", "N", {
             helpFor: { llm: "LLM: also cover hallucination, toxicity and prompt-injection exposure, with an example of each." },
           }),
-          t("b5_bias", "Bias findings", "Results of fairness tests and what we did about them", "N", {
-            helpReplaceFor: {
+          t("b5_bias", "Bias findings", "Results of fairness tests and what we did about them", "N", { helpReplaceFor: {
               llm: "Results of fairness tests and what we did about them",
               custom_mt: "Gender, formality and register bias tests, and results.",
-            },
-          }),
+            }, inherits: { keys: ["a7_bias"] } }),
           t("b5_mitigations", "Mitigations", "Guardrails, fallbacks and review steps that contain these risks", "P", req),
         ],
       },
@@ -274,19 +287,14 @@ export const MODEL_PARTS: Part[] = [
           t("b7_routing_note", "Routing logic", "When arbitr chooses this model over alternatives", "N", { subOf: "b7_how_used" }),
           t("b7_cortex", "Cortex use", "Whether it reads from or writes to Cortex, and how", "P"),
           t("b7_api", "API and integrations", "Availability via API, MCP or connectors", "P"),
-          t(
-            "b7_data_handling",
-            "Data handling",
-            "Where the model is hosted and where data is processed; whether customer content is stored or logged at runtime, and for how long; sub-processors",
-            "P",
-            req,
-          ),
+          t("b7_data_handling", "Data handling", "Where the model is hosted and where data is processed; whether customer content is stored or logged at runtime, and for how long; sub-processors", "P", { required: true, inherits: { keys: ["a5_residency", "a6_hosting"], note: "Sub-processors: available under NDA (Part A, A5 Sub-processors)." } }),
         ],
       },
       {
         id: "B8",
         title: "B8. Version history",
         fields: [
+          t("b8_policy", "Versioning policy", "How versions are numbered, announced and rolled back for this model", "P", { inherits: { keys: ["a8_versioning"] } }),
           {
             kind: "table",
             key: "b8_versions",
@@ -343,13 +351,13 @@ export const MODEL_PARTS: Part[] = [
   },
   {
     id: "C3",
-    title: "Type section — LLM Model",
+    title: "Type section — LLM",
     showFor: "llm",
     draft: true,
     sections: [
       {
         id: "C3",
-        title: "C3. LLM Model",
+        title: "C3. LLM",
         fields: [
           t("c3_tasks", "Tasks", "What it generates or rewrites (post-editing, style, terminology, summarisation)", "P"),
           t("c3_setup", "Base model and setup", "Foundation model, fine-tuned or prompted, provider and where it is hosted", "N"),
@@ -372,12 +380,12 @@ export const MODEL_PARTS: Part[] = [
         id: "C4",
         title: "C4. Custom Customer Model",
         fields: [
-          t("c4_data_needed", "Data we need", "Minimum and ideal data: TM size, glossaries, style guides, approved content", "P"),
-          t("c4_time_to_model", "Time to first model", "Weeks from data receipt to a model in production", "P"),
+          t("c4_data_needed", "Data we need", "Minimum and ideal data: TM size, glossaries, style guides, approved content", "P", { inherits: { keys: ["a3_min_data"] } }),
+          t("c4_time_to_model", "Time to first model", "Weeks from data receipt to a model in production", "P", { inherits: { keys: ["a3_build_time"] } }),
           t("c4_uplift", "Measured uplift", "Gain on the customer's own held-out content vs our generic model", "P"),
           t("c4_retraining", "Retraining", "Cadence and trigger (volume of new approved content, drift)", "P"),
-          t("c4_isolation", "Isolation", "Confirmation the model and data serve only that customer", "P"),
-          t("c4_ownership", "Ownership and exit", "Who owns weights; what happens to data and model at contract end", "P"),
+          t("c4_isolation", "Isolation", "Confirmation the model and data serve only that customer", "P", { inherits: { keys: ["a5_isolation"] } }),
+          t("c4_ownership", "Ownership and exit", "Who owns weights; what happens to data and model at contract end", "P", { inherits: { keys: ["a6_ownership"] } }),
           t("c4_proof", "Proof customer", "A named or anonymised customer result, with approval status", "N"),
         ],
       },
@@ -429,7 +437,7 @@ export const MODEL_PARTS: Part[] = [
             subOf: "d3_onboarding",
             showFor: "customer_trained",
           }),
-          t("d3_deliverables", "Deliverables and reporting", "What customers get at go-live (model card, eval report, dashboards) and the quality reporting they see after launch, and how often", "P"),
+          t("d3_deliverables", "Deliverables and reporting", "What customers get at go-live (model card, eval report, dashboards) and the quality reporting they see after launch, and how often", "P", { inherits: { keys: ["a7_docs"] } }),
         ],
       },
       {
@@ -496,6 +504,7 @@ export const SIGNOFF_ROLES = [
   { role: "product", label: "Product", scope: "Positioning and packaging" },
   { role: "security_legal", label: "Security & Legal", scope: "Data, licensing, compliance" },
   { role: "revops", label: "RevOps", scope: "Pricing and SKUs" },
+  { role: "marketing", label: "Marketing", scope: "Positioning, claims wording and assets" },
 ] as const;
 
 export const ALL_ROLES = [

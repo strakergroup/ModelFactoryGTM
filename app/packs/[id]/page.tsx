@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { addComment, requestChanges, resolveComment, signOff } from "../../../lib/actions";
+import { addComment, archivePack, requestChanges, resolveComment, restorePack, signOff } from "../../../lib/actions";
+import { effectiveAnswers, factorySig, inheritSource, revEffective } from "../../../lib/inherit";
 import { completion, completionText, fieldLabel, helpFor, sourceLabel, isAnswered, isNA, partsFor, typeLabels, SIGNOFF_ROLES, type Answers, type Field, type NA } from "../../../lib/fields";
 import { blocking, checkPack, isStale, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../lib/checks";
 import { requireName } from "../../../lib/session";
@@ -27,8 +28,14 @@ export default async function PackPage({
   const v = pack.version;
   const current = pack.versions.find((x) => x.version === v);
   const previous = pack.versions.find((x) => x.version === v - 1);
-  // Reviewers see the published version; a never-published pack shows the live draft.
-  const shown: Answers = current?.answers ?? pack.answers;
+  const factory = pack.kind === "model" ? await getPack(FACTORY_ID) : null;
+  const factoryAnswers = factory?.pack.answers ?? {};
+  // Reviewers see the published version (inherited Part A policy frozen in);
+  // a never-published pack shows the live draft with current Part A policy.
+  const shown: Answers =
+    pack.kind !== "model" ? current?.answers ?? pack.answers : current ? revEffective(current, factoryAnswers) : effectiveAnswers(pack.answers, pack.differs, factoryAnswers);
+  const shownDiffers = current ? current.differs ?? [] : pack.differs ?? [];
+  const scope = current ? `Published Rev ${v}` : "Draft";
   const types = current?.modelTypes ?? pack.modelTypes;
   const prevAnswers = previous?.answers ?? null;
   const changed = (f: Field) => prevAnswers !== null && JSON.stringify(prevAnswers[f.key] ?? null) !== JSON.stringify(shown[f.key] ?? null);
@@ -37,16 +44,20 @@ export default async function PackPage({
   const shownNa: NA = (current ? current.na : pack.na) ?? {};
   const shownOverride = current ? current.splitOverride : pack.splitOverride;
   const c = completion(pack.kind, types, shown, shownNa);
-  const issues = checkPack({ kind: pack.kind, modelTypes: types, answers: shown, na: shownNa, splitOverride: shownOverride });
+  const issues = checkPack({ kind: pack.kind, modelTypes: types, answers: shown, na: shownNa, splitOverride: shownOverride, name: current?.name ?? pack.name });
   const blockers = blocking(issues);
   const issuesFor = (key: string) => issues.filter((i) => i.key === key);
-  const factory = pack.kind === "model" ? await getPack(FACTORY_ID) : null;
-  const requestProcess = typeof factory?.pack.answers.a9_request_process === "string" ? factory.pack.answers.a9_request_process : "";
+  const requestProcess = typeof factoryAnswers.a9_request_process === "string" ? factoryAnswers.a9_request_process : "";
   const byField = (key: string) => pack.comments.filter((x) => x.field === key);
   const changedCount = prevAnswers ? parts.flatMap((p) => p.sections.flatMap((s) => s.fields)).filter(changed).length : 0;
-  // Sign-offs from before the migration, or on a Rev that now has blocking issues, are stale.
+  // Sign-offs are stale if given before a migration, if this Rev now has blocking
+  // issues, or if the Part A policy they inherited has changed since.
   const revBlocked = v > 0 && blockers.length > 0;
-  const onRev = currentSignoffs(pack).map((s) => ({ ...s, stale: isStale(s.at, pack.migratedAt, revBlocked) }));
+  const sigNow = pack.kind === "model" ? factorySig(shownDiffers, factoryAnswers) : undefined;
+  const onRev = currentSignoffs(pack).map((s) => {
+    const factoryMoved = Boolean(s.factorySig && s.factorySig !== sigNow);
+    return { ...s, factoryMoved, stale: isStale(s.at, pack.migratedAt, revBlocked, factoryMoved) };
+  });
   const signed = new Map(onRev.filter((s) => !s.stale).map((s) => [s.role, s]));
   const staleByRole = new Map(onRev.filter((s) => s.stale).map((s) => [s.role, s]));
   const reviewFields = pack.reviewFields ?? [];
@@ -87,15 +98,28 @@ export default async function PackPage({
         ) : null}
         {v === 0 && <p className="warn-box">Draft: not published yet. Reviewers can read and comment, but can&apos;t sign off until it&apos;s published.</p>}
 
+        {pack.archived && (
+          <form action={restorePack} className="warn-box">
+            <input type="hidden" name="id" value={id} />
+            <strong>Archived</strong> by {pack.archived.by} on {when(pack.archived.at)}. It&apos;s hidden from the home page.{" "}
+            <button type="submit" className="secondary">Restore</button>
+          </form>
+        )}
         <div className="actions">
           <Link className="button" href={`/packs/${id}/edit`}>Edit</Link>
           <Link className="button secondary" href={`/packs/${id}/public`}>Public-only view</Link>
+          {pack.kind === "model" && !pack.archived && (
+            <form action={archivePack}>
+              <input type="hidden" name="id" value={id} />
+              <button type="submit" className="secondary">Archive pack</button>
+            </form>
+          )}
           {prevAnswers && <span className="muted small">{changedCount} field{changedCount === 1 ? "" : "s"} changed since Rev {v - 1} (marked <span className="changed-dot">changed</span>)</span>}
         </div>
 
         {v > 0 && (blockers.length > 0 ? (
           <div className="block-box">
-            <strong>Rev {v} can&apos;t become Launch-ready: {blockers.length} blocking issue{blockers.length === 1 ? "" : "s"}.</strong>{" "}
+            <strong>{scope}: {blockers.length} blocking issue{blockers.length === 1 ? "" : "s"}. It can&apos;t become Launch-ready.</strong>{" "}
             Sign-offs are recorded, but the model team must fix these and publish a new Rev.
             <ul>
               {(Object.keys(ISSUE_TITLE) as Issue["kind"][]).map((k) => {
@@ -113,9 +137,9 @@ export default async function PackPage({
             </ul>
           </div>
         ) : (
-          <p className="ok-box">Rev {v} has no blocking issues. It becomes Launch-ready when all four roles sign off.</p>
+          <p className="ok-box">{scope}: no blocking issues. It becomes Launch-ready when every role signs off.</p>
         ))}
-        {v > 0 && <ReviewList issues={issues} href={(k) => `#f-${k}`} />}
+        {v > 0 && <ReviewList issues={issues} href={(k) => `#f-${k}`} scope={scope} />}
         {issuesFor(PACK_KEY).map((i, n) => (
           <div key={n} id={`f-${PACK_KEY}`} className="flag flag-block">{i.message}</div>
         ))}
@@ -138,7 +162,13 @@ export default async function PackPage({
                     <div className="small">
                       <div className="stale-label">Stale – re-approval needed</div>
                       {stale.by} · {when(stale.at)}
-                      <div>{pack.migratedAt && stale.at < pack.migratedAt ? "Given before the move to the new structure." : "This Rev now has blocking issues."}</div>
+                      <div>
+                        {pack.migratedAt && stale.at < pack.migratedAt
+                          ? "Given before the move to the new structure."
+                          : stale.factoryMoved
+                            ? "Part A policy this pack inherits has changed since."
+                            : "This Rev now has blocking issues."}
+                      </div>
                     </div>
                   )}
                   {s ? (
@@ -210,6 +240,9 @@ export default async function PackPage({
                         <TagPill tag={f.tag} />
                       </div>
                       <p className="help">{helpFor(f, types)}</p>
+                      {pack.kind === "model" && f.inherits && !shownDiffers.includes(f.key) && (
+                        <p className="inherited-label">Same as factory policy ({inheritSource(f.key)})</p>
+                      )}
                       {isNA(f, shownNa) ? <p className="answer muted">N/A: {shownNa[f.key]}</p> : <Value field={f} answers={shown} />}
                       {issuesFor(f.key).map((i, n) => (
                         <div key={n} className={`flag ${i.blocking ? "flag-block" : "flag-warn"}`}>{i.message}</div>
@@ -290,13 +323,13 @@ function Thread({ packId, field, comments }: { packId: string; field: string; co
   );
 }
 
-function ReviewList({ issues, href }: { issues: Issue[]; href: (key: string) => string }) {
+function ReviewList({ issues, href, scope }: { issues: Issue[]; href: (key: string) => string; scope?: string }) {
   const warn = issues.filter((i) => !i.blocking);
   if (!warn.length) return null;
   const kinds = [...new Set(warn.map((i) => i.kind))];
   return (
     <div className="warn-box">
-      <strong>Also review</strong> (these don&apos;t block Launch-ready):
+      <strong>{scope ? `${scope}: also review` : "Also review"}</strong> (these don&apos;t block Launch-ready):
       <ul>
         {kinds.map((k) => (
           <li key={k}>

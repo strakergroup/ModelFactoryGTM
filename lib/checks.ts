@@ -4,7 +4,7 @@ import { FACTORY_PARTS, MODEL_PARTS, SPLIT_REASON_MIN, fieldsFor, isDone, isNA, 
 // browser, the review page shows them, and sign-off uses them to decide
 // whether a pack can become Launch-ready.
 
-export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "model" | "spec" | "split" | "scale" | "placement" | "llm";
+export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "model" | "spec" | "split" | "title" | "scale" | "placement" | "llm";
 export type IssueAction = "create_claim" | "move_to_b5" | "remove_llm";
 export type Issue = { key: string; kind: IssueKind; message: string; blocking: boolean; text?: string; action?: IssueAction };
 
@@ -15,6 +15,7 @@ export type CheckInput = {
   na?: NA;
   splitOverride?: { reason: string } | null;
   today?: string; // YYYY-MM-DD, for tests
+  name?: string; // pack title, checked against B1's version
 };
 
 export const PACK_KEY = "_pack"; // issues about the pack as a whole
@@ -87,14 +88,25 @@ function significantNumbers(s: string): string[] {
   return [...out];
 }
 
+// Lower-case words only, for comparing wording across fields.
+const normText = (s: string) => s.toLowerCase().replace(/[^a-z0-9äöüß\s]/gi, " ").replace(/\s+/g, " ").trim();
+function shingles(s: string, size = 6): Set<string> {
+  const w = normText(s).split(" ").filter(Boolean);
+  const out = new Set<string>();
+  for (let i = 0; i + size <= w.length; i++) out.add(w.slice(i, i + size).join(" "));
+  return out;
+}
+
 const allNumbers = (s: string) => new Set([...s.matchAll(/\d+(?:[.,]\d+)*[kKmM]?/g)].map((m) => norm(m[0])));
 const sentences = (s: string) => s.split(/(?<=[.;!?])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
 const quote = (xs: string[]) => xs.map((x) => `“${x}”`).join(", ");
 
 export type ApprovedClaim = { text: string; numbers: Set<string> };
 
-export function approvedClaims(answers: Answers): ApprovedClaim[] {
-  const rows = Array.isArray(answers.e_claims) ? (answers.e_claims as string[][]) : [];
+export const claimsKeyFor = (kind: "factory" | "model") => (kind === "factory" ? "a10_claims" : "e_claims");
+
+export function approvedClaims(answers: Answers, key = "e_claims"): ApprovedClaim[] {
+  const rows = Array.isArray(answers[key]) ? (answers[key] as string[][]) : [];
   return rows
     .filter((r) => r[CLAIM]?.trim() && r[EVIDENCE]?.trim() && r[APPROVED_BY]?.trim())
     .map((r) => ({ text: r[CLAIM].toLowerCase(), numbers: allNumbers(r[CLAIM]) }));
@@ -149,8 +161,27 @@ export function brokenReferences(evidence: string, b4Rows: number): string[] {
 export const versionsIn = (s: string) => [...new Set([...s.matchAll(/\bv(\d+(?:\.\d+)*)\b/gi)].map((m) => `v${m[1]}`))];
 
 // A sign-off stops counting if it predates a schema migration, or if the Rev it approved now has blocking issues.
-export function isStale(signedAt: string, migratedAt: string | undefined, revHasBlocking: boolean): boolean {
-  return revHasBlocking || Boolean(migratedAt && signedAt < migratedAt);
+export function isStale(
+  signedAt: string,
+  migratedAt: string | undefined,
+  revHasBlocking: boolean,
+  factoryChanged = false,
+): boolean {
+  return revHasBlocking || factoryChanged || Boolean(migratedAt && signedAt < migratedAt);
+}
+
+// Migration notes clear themselves once their condition is met.
+export function noteResolved(note: string, answers: Answers, factory: Answers, reviewFields: string[] = []): boolean {
+  const b4 = Array.isArray(answers.b4_metrics) ? (answers.b4_metrics as string[][]) : [];
+  const rows = b4.filter((r) => r[B4.metric]?.trim());
+  if (note.startsWith("C1 Quality by pair")) return rows.some((r) => /COMET|chrF|BLEU/i.test(r[B4.metric]) && r[1]?.trim());
+  if (note.startsWith("C1 Post-edit effort")) return rows.some((r) => /minute|post-?edit/i.test(r[B4.metric]));
+  if (note.startsWith("D3 Request process")) return typeof factory.a9_request_process === "string" && factory.a9_request_process.trim().length > 0;
+  if (note.startsWith("B3 Domains")) return thinSentences(textOf(answers, "b3_domains")).length === 0;
+  if (note.startsWith("B4 Results: new columns")) return rows.length > 0 && rows.every((r) => r[1]?.trim() && r[B4.scale]?.trim()) && !reviewFields.includes("b4_metrics");
+  const date = note.match(/^B4 Results "(.+)": couldn't read the date/);
+  if (date) return rows.some((r) => r[B4.metric] === date[1] && r[B4.measured]?.trim());
+  return false;
 }
 
 export function checkPack(input: CheckInput): Issue[] {
@@ -159,7 +190,8 @@ export function checkPack(input: CheckInput): Issue[] {
   const today = input.today ?? new Date().toISOString().slice(0, 10);
   const fields = fieldsFor(kind, modelTypes);
   const issues: Issue[] = [];
-  const claims = approvedClaims(answers);
+  const claimsKey = claimsKeyFor(kind);
+  const claims = approvedClaims(answers, claimsKey);
 
   // 1. Required fields: answered, or N/A with a reason.
   for (const f of fields) {
@@ -176,14 +208,18 @@ export function checkPack(input: CheckInput): Issue[] {
           : "Required: answer this, or mark it N/A with a reason.",
     });
   }
-  if (kind === "factory") return issues;
+  const partE = kind === "factory" ? "A10 Factory claims register" : "Part E";
 
-  // Numbers held in NDA and Internal fields, with where each one lives.
+  // Numbers and text held in NDA and Internal fields, with where each lives.
   const secret = new Map<string, string>();
+  const secretText: { src: string; norm: string; shingles: Set<string> }[] = [];
   for (const f of fields) {
     if (f.tag === "P" || isNA(f, na)) continue;
+    const src = `${sectionOf(f.key)} ${f.label} (${f.tag === "N" ? "Under NDA" : "Internal"})`;
     const values = f.kind === "text" ? [textOf(answers, f.key)] : valueCells(f, answers);
-    for (const v of values) for (const n of significantNumbers(v)) if (!secret.has(n)) secret.set(n, `${sectionOf(f.key)} ${f.label} (${f.tag === "N" ? "Under NDA" : "Internal"})`);
+    for (const v of values) for (const n of significantNumbers(v)) if (!secret.has(n)) secret.set(n, src);
+    const all = values.join(" ");
+    if (all.trim()) secretText.push({ src, norm: normText(all), shingles: shingles(all) });
   }
 
   // 2 + 3. Public text fields: unregistered claims and visibility conflicts.
@@ -210,7 +246,26 @@ export function checkPack(input: CheckInput): Issue[] {
         blocking: true,
         action: "create_claim",
         text: unregistered.join(" "),
-        message: `Unregistered public claim: ${quote(unregistered)} doesn't match an approved claim in Part E (approved = has Evidence and Approved by).`,
+        message: `Unregistered public claim: ${quote(unregistered)} doesn't match an approved claim in ${partE} (approved = has Evidence and Approved by).`,
+      });
+    }
+    // Public text that repeats NDA/Internal text (a sentence of 5+ words, or a 6-word run).
+    const repeats = new Map<string, string[]>();
+    for (const s of sentences(text)) {
+      const n = normText(s);
+      if (n.split(" ").length < 5) continue;
+      const own = shingles(s);
+      for (const t of secretText) {
+        if (t.norm.includes(n) || [...own].some((x) => t.shingles.has(x))) repeats.set(t.src, [...(repeats.get(t.src) ?? []), s]);
+      }
+    }
+    for (const [src, list] of repeats) {
+      if (conflicts.has(src)) continue; // already flagged for the same source
+      issues.push({
+        key: f.key,
+        kind: "visibility",
+        blocking: true,
+        message: `Visibility conflict: ${quote([...new Set(list)])} repeats text from ${src}. Reword it for a public audience, or remove it here.`,
       });
     }
     for (const [src, nums] of conflicts) {
@@ -222,6 +277,8 @@ export function checkPack(input: CheckInput): Issue[] {
       });
     }
   }
+
+  if (kind === "factory") return issues;
 
   // 4. Expired metrics in B4.
   const b4 = Array.isArray(answers.b4_metrics) ? (answers.b4_metrics as string[][]) : [];
@@ -250,7 +307,7 @@ export function checkPack(input: CheckInput): Issue[] {
   }
 
   // 5b. A claim's "Model or factory" must name the same model version as B1.
-  const b1Versions = versionsIn(textOf(answers, "b1_name_version"));
+  const b1Versions = versionsIn(`${textOf(answers, "b1_internal_id")} ${textOf(answers, "b1_external_name")}`);
   const mismatched = claimRows.filter((r) => {
     const model = r[MODEL] ?? "";
     if (!r[CLAIM]?.trim() || /\bfactory\b/i.test(model)) return false;
@@ -322,6 +379,17 @@ export function checkPack(input: CheckInput): Issue[] {
     });
   }
 
+  // Title names a model version that isn't B1's (review flag, not blocking).
+  const titleVersions = versionsIn(input.name ?? "");
+  if (titleVersions.length && b1Versions.length && !titleVersions.every((v) => b1Versions.includes(v))) {
+    issues.push({
+      key: PACK_KEY,
+      kind: "title",
+      blocking: false,
+      message: `Pack title says ${titleVersions.join(", ")} but B1 says ${b1Versions.join(", ")}. Rename the pack or fix B1.`,
+    });
+  }
+
   // 10. One sellable product per pack.
   if (modelTypes.includes("custom_mt") && modelTypes.includes("customer_trained") && (input.splitOverride?.reason?.trim().length ?? 0) < SPLIT_REASON_MIN) {
     issues.push({
@@ -346,6 +414,7 @@ export const ISSUE_TITLE: Record<IssueKind, string> = {
   model: "Claims for a different model version",
   spec: "Specs without measurement conditions",
   split: "Pack covers two products",
+  title: "Pack title doesn't match B1",
   scale: "Scale warnings",
   placement: "Text in the wrong field",
   llm: "LLM-only content in an MT model",

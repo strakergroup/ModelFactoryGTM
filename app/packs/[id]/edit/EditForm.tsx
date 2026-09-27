@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { clearSplitOverride, publishPack, saveDraft, saveSplitOverride } from "../../../../lib/actions";
-import { blocking, checkPack, ISSUE_TITLE, llmSentences, PACK_KEY, thinSentences, type Issue } from "../../../../lib/checks";
+import { blocking, checkPack, claimsKeyFor, ISSUE_TITLE, llmSentences, PACK_KEY, thinSentences, type Issue } from "../../../../lib/checks";
 import {
   MODEL_TYPES,
   NA_MIN,
@@ -24,6 +24,7 @@ import {
   type TableField,
 } from "../../../../lib/fields";
 import { plusSixMonths, stripFromLabels } from "../../../../lib/migrate";
+import { effectiveAnswers, inheritSource, inheritedValue } from "../../../../lib/inherit";
 
 type Props = {
   id: string;
@@ -39,9 +40,13 @@ type Props = {
   factoryRequestProcess: string;
   initialReviewFields: string[];
   initialReviewCells: string[];
+  factoryAnswers: Answers;
+  initialDiffers: string[];
+  initialSuggest: string[];
+  publishAttempted: boolean;
 };
 
-const CLAIMS_KEY = "e_claims";
+
 // Grow with the answer so merged text ("From …: …") is visible without scrolling.
 const rowsFor = (v: string) => Math.min(14, Math.max(2, v.split("\n").length + Math.floor(v.length / 95)));
 const today = () => new Date().toISOString().slice(0, 10);
@@ -64,6 +69,10 @@ export default function EditForm(props: Props) {
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const events = useRef<{ action: string; detail?: string }[]>([]);
   const [splitReason, setSplitReason] = useState("");
+  // Inheriting fields: "Same as factory policy" unless the pack says it differs.
+  const [differs, setDiffers] = useState<string[]>(props.initialDiffers);
+  const [suggest, setSuggest] = useState<string[]>(props.initialSuggest);
+  const [onlyAction, setOnlyAction] = useState(false);
 
   useEffect(() => {
     if (first.current) {
@@ -80,6 +89,8 @@ export default function EditForm(props: Props) {
           fields: reviewFields,
           cells: reviewCells,
           events: sent,
+          differs,
+          suggest,
         });
         if (res.ok) {
           etag.current = res.etag;
@@ -96,7 +107,7 @@ export default function EditForm(props: Props) {
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [answers, na, name, modelTypes, otherType, reviewFields, reviewCells, id, kind]);
+  }, [answers, na, name, modelTypes, otherType, reviewFields, reviewCells, differs, suggest, id, kind]);
 
   // Warn before leaving with unsaved typing.
   useEffect(() => {
@@ -157,21 +168,42 @@ export default function EditForm(props: Props) {
   };
 
   // "Create claim from this field": a pre-filled claims row linked back to the field.
-  const claimsField = partsFor("model", []).flatMap((p) => p.sections.flatMap((s) => s.fields)).find((f) => f.key === CLAIMS_KEY) as TableField;
+  const CLAIMS_KEY = claimsKeyFor(kind);
+  const claimsField = partsFor(kind, []).flatMap((p) => p.sections.flatMap((s) => s.fields)).find((f) => f.key === CLAIMS_KEY) as TableField;
   const createClaim = (f: Field, text: string) => {
     const rows = table(claimsField).filter((r) => r.some((c) => c.trim()));
     // "Model or factory" comes from B1 so the claim names the model version it's evidence for.
-    const b1 = String(answers.b1_name_version ?? "").split("·")[0].trim();
-    setTable(CLAIMS_KEY, [...rows, [text.trim(), b1 || name, "", f.tag, "", "", f.key]]);
+    const b1 = String(answers.b1_external_name ?? answers.b1_internal_id ?? "").trim();
+    setTable(CLAIMS_KEY, [...rows, [text.trim(), kind === "factory" ? "Factory" : b1 || name, "", f.tag, "", "", f.key]]);
     setTimeout(() => document.getElementById(`ed-${CLAIMS_KEY}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   };
 
   const parts = partsFor(kind, modelTypes);
-  const c = completion(kind, modelTypes, answers, na);
-  const issues = useMemo(
-    () => checkPack({ kind, modelTypes, answers, na, splitOverride }),
-    [kind, modelTypes, answers, na, splitOverride],
+  // What the pack actually says: its own answers plus inherited Part A policy.
+  const effective = useMemo(
+    () => (kind === "model" ? effectiveAnswers(answers, differs, props.factoryAnswers) : answers),
+    [kind, answers, differs, props.factoryAnswers],
   );
+  const c = completion(kind, modelTypes, effective, na);
+  const issues = useMemo(
+    () => checkPack({ kind, modelTypes, answers: effective, na, splitOverride, name }),
+    [kind, modelTypes, effective, na, splitOverride, name],
+  );
+  const inheriting = (key: string) => kind === "model" && Boolean(partsFor("model", modelTypes).flatMap((p) => p.sections.flatMap((s) => s.fields)).find((f) => f.key === key)?.inherits) && !differs.includes(key);
+  const setDiffer = (key: string, on: boolean) => {
+    setDiffers((d) => (on ? [...new Set([...d, key])] : d.filter((k) => k !== key)));
+    setSuggest((x) => x.filter((k) => k !== key));
+    events.current.push({ action: on ? `set ${fieldLabel(key)} to “This model differs” from Part A` : `set ${fieldLabel(key)} to “Same as factory policy”` });
+  };
+  // Fields needing action: flags, review badges, inherit suggestions, or missing Required.
+  const needsAction = (f: Field) =>
+    issues.some((i) => i.key === f.key) || reviewFields.includes(f.key) || suggest.includes(f.key) || (f.required && !isDone(f, effective, na));
+  // Before the first publish attempt, missing Required fields are shown in neutral grey.
+  const requiredClass = props.publishAttempted ? "flag-block" : "flag-neutral";
+  const sectionCounts = parts.flatMap((p) => p.sections).map((sec) => ({
+    id: sec.id,
+    count: sec.fields.filter(needsAction).length,
+  }));
   const issuesFor = (key: string) => issues.filter((i) => i.key === key);
   const blockers = blocking(issues);
   const packIssue = issues.find((i) => i.key === PACK_KEY);
@@ -194,11 +226,22 @@ export default function EditForm(props: Props) {
             Publish Rev {version + 1} for review
           </button>
         </form>
+        <nav className="section-menu" aria-label="Sections">
+          {sectionCounts.map((sc) => (
+            <a key={sc.id} href={`#sec-${sc.id}`} className={sc.count ? "has-issues" : ""}>
+              {sc.id}
+              {sc.count > 0 && <span className="count">{sc.count}</span>}
+            </a>
+          ))}
+          <label className="check small only-action">
+            <input type="checkbox" checked={onlyAction} onChange={(e) => setOnlyAction(e.target.checked)} /> Show only fields needing action
+          </label>
+        </nav>
       </div>
 
       {blockers.length > 0 ? (
         <div className="block-box">
-          <strong>{blockers.length} blocking issue{blockers.length === 1 ? "" : "s"}.</strong> You can publish for review, but this pack
+          <strong>Draft: {blockers.length} blocking issue{blockers.length === 1 ? "" : "s"}.</strong> You can publish for review, but this pack
           can&apos;t become Launch-ready until they&apos;re fixed.
           <ul>
             {(Object.keys(ISSUE_TITLE) as Issue["kind"][]).map((k) => {
@@ -219,7 +262,7 @@ export default function EditForm(props: Props) {
           </ul>
         </div>
       ) : (
-        <p className="ok-box">No blocking issues. Once published and signed off by all four roles, this pack becomes Launch-ready.</p>
+        <p className="ok-box">Draft: no blocking issues. Once published and signed off by every role, this pack becomes Launch-ready.</p>
       )}
       <ReviewList issues={issues} href={(k) => `#ed-${k}`} />
 
@@ -313,7 +356,7 @@ export default function EditForm(props: Props) {
           <h2>{part.title}</h2>
           {part.draft && <p className="warn-box small">Draft questions, awaiting model team confirmation. Flag any question that is wrong or missing in a comment.</p>}
           {part.sections.map((s) => (
-            <div key={s.id} className="section">
+            <div key={s.id} className="section" id={`sec-${s.id}`} hidden={onlyAction && !s.fields.some(needsAction)}>
               <h3>{s.title}</h3>
               {s.readonlyFactory && kind === "model" && (
                 <div className="field readonly">
@@ -325,11 +368,13 @@ export default function EditForm(props: Props) {
               {s.fields.map((f) => {
                 const own = issuesFor(f.key);
                 const isNaOpen = naOpen.has(f.key);
+                const inherited = inheriting(f.key);
+                if (onlyAction && !needsAction(f)) return null;
                 return (
                   <div
                     key={f.key}
                     id={`ed-${f.key}`}
-                    className={`field ${f.subOf ? "sub" : ""} ${isDone(f, answers, na) ? "done" : ""} ${own.some((i) => i.blocking) ? "flagged" : ""}`}
+                    className={`field ${f.subOf ? "sub" : ""} ${isDone(f, effective, na) ? "done" : ""} ${own.some((i) => i.blocking && (i.kind !== "required" || props.publishAttempted)) ? "flagged" : ""}`}
                   >
                     <div className="field-head">
                       <label htmlFor={f.key} className="field-label">
@@ -342,7 +387,23 @@ export default function EditForm(props: Props) {
                     </div>
                     <p className="help">{helpFor(f, modelTypes)}</p>
 
-                    {isNaOpen ? (
+                    {kind === "model" && f.inherits && (
+                      <label className="check small differs-toggle">
+                        <input type="checkbox" checked={!inherited} onChange={(e) => setDiffer(f.key, e.target.checked)} /> This model differs from the factory policy
+                      </label>
+                    )}
+                    {inherited ? (
+                      <div className="inherited">
+                        <div className="inherited-label">Same as factory policy ({inheritSource(f.key)})</div>
+                        {inheritedValue(f.key, props.factoryAnswers) ? (
+                          <p className="answer">{inheritedValue(f.key, props.factoryAnswers)}</p>
+                        ) : (
+                          <p className="gap">
+                            Part A hasn&apos;t answered this yet. <a href="/packs/factory/edit">Answer it on the factory fact sheet</a>, or tick “This model differs”.
+                          </p>
+                        )}
+                      </div>
+                    ) : isNaOpen ? (
                       <input
                         className="na-reason"
                         value={na[f.key] ?? ""}
@@ -370,6 +431,18 @@ export default function EditForm(props: Props) {
                       />
                     )}
 
+                    {suggest.includes(f.key) && !inherited && (
+                      <div className="flag flag-review">
+                        This answer was kept when factory policy inheritance arrived. If it says the same as Part A
+                        {inheritedValue(f.key, props.factoryAnswers) ? <> (“{inheritedValue(f.key, props.factoryAnswers).slice(0, 140)}”)</> : null}, use the factory policy instead.
+                        <button type="button" className="secondary small-button" onClick={() => setDiffer(f.key, false)}>
+                          Use factory policy
+                        </button>
+                        <button type="button" className="link-button small" onClick={() => setSuggest((x) => x.filter((k) => k !== f.key))}>
+                          Keep this answer
+                        </button>
+                      </div>
+                    )}
                     {reviewFields.includes(f.key) && (
                       <div className="flag flag-review">
                         Moved or merged here by the new structure. Check it reads right; editing it or marking it reviewed removes any “From …:” labels.
@@ -383,7 +456,7 @@ export default function EditForm(props: Props) {
                     </label>
 
                     {own.map((i, n) => (
-                      <div key={n} className={`flag ${i.blocking ? "flag-block" : "flag-warn"}`}>
+                      <div key={n} className={`flag ${i.kind === "required" ? requiredClass : i.blocking ? "flag-block" : "flag-warn"}`}>
                         {i.message}
                         {i.action === "create_claim" && (
                           <button type="button" className="secondary small-button" onClick={() => createClaim(f, i.text ?? String(answers[f.key] ?? ""))}>

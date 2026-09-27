@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { deleteDraft, reopenPack } from "../../../../lib/actions";
+import { archivePack, deleteDraft, reopenPack } from "../../../../lib/actions";
+import { noteResolved } from "../../../../lib/checks";
 import ConfirmButton from "../../../ConfirmButton";
 import { requireName } from "../../../../lib/session";
 import { fieldLabel } from "../../../../lib/fields";
@@ -24,7 +25,10 @@ export default async function EditPage({
 
   const editable = pack.status === "draft" || pack.status === "changes_requested";
   const factory = pack.kind === "model" ? await getPack(FACTORY_ID) : null;
-  const requestProcess = typeof factory?.pack.answers.a9_request_process === "string" ? factory.pack.answers.a9_request_process : "";
+  const factoryAnswers = factory?.pack.answers ?? {};
+  const requestProcess = typeof factoryAnswers.a9_request_process === "string" ? factoryAnswers.a9_request_process : "";
+  // Migration notes clear themselves once their condition is met.
+  const openNotes = (pack.migrationNotes ?? []).filter((n) => !noteResolved(n, pack.answers, factoryAnswers, pack.reviewFields));
   const open = pack.comments.filter((c) => !c.resolved);
 
   return (
@@ -59,13 +63,13 @@ export default async function EditPage({
                 </ul>
               </div>
             )}
-            {pack.needsReview && (
+            {pack.needsReview && (openNotes.length > 0 || (pack.reviewFields?.length ?? 0) > 0) && (
               <div className="warn-box">
                 <strong>Needs review: moved to the new fact pack structure.</strong> Merged answers are joined under their new field,
                 labelled “From &lt;old field&gt;:”. Tidy them, then publish Rev {pack.version + 1}; publishing clears this flag.
-                {(pack.migrationNotes?.length ?? 0) > 0 && (
+                {openNotes.length > 0 && (
                   <ul>
-                    {pack.migrationNotes!.map((n, i) => <li key={i}>{n}</li>)}
+                    {openNotes.map((n, i) => <li key={i}>{n}</li>)}
                   </ul>
                 )}
               </div>
@@ -83,8 +87,19 @@ export default async function EditPage({
               factoryRequestProcess={requestProcess}
               initialReviewFields={pack.reviewFields ?? []}
               initialReviewCells={pack.reviewCells ?? []}
+              factoryAnswers={pack.kind === "model" ? factoryAnswers : {}}
+              initialDiffers={pack.differs ?? []}
+              initialSuggest={pack.suggestInherit ?? []}
+              publishAttempted={Boolean(pack.publishAttempted || pack.version > 0)}
               version={pack.version}
             />
+            {pack.kind === "model" && (
+              <form action={archivePack} className="danger-zone">
+                <input type="hidden" name="id" value={id} />
+                <span className="muted small">Archiving hides the pack from the home page. It can be restored from the Archived list.</span>
+                <button type="submit" className="secondary">Archive pack</button>
+              </form>
+            )}
             {pack.kind === "model" && pack.version === 0 && (
               <form action={deleteDraft} className="danger-zone">
                 <input type="hidden" name="id" value={id} />

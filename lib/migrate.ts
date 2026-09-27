@@ -159,6 +159,7 @@ export const EVIDENCE_REPOINTS: { from: RegExp; to: string | { b4RowMatching: Re
   { from: /\bC4\s+Onboarding steps\b/gi, to: "D3 Customer-trained build", key: "d3_onboarding_ctm" },
   { from: /\bB3\s+Domains and languages\b(?!\s+covered)/gi, to: "B3 Domains and languages covered", key: "b3_domains" },
   { from: /\bB5\s+Known weaknesses\b(?!\s+and gaps)/gi, to: "B5 Known weaknesses and gaps", key: "b5_weaknesses" },
+  { from: /\bB1\s+Model name and version\b/gi, to: "B1 Internal ID", key: "b1_internal_id" },
 ];
 
 export type Repoint = { claim: string; from: string; to: string };
@@ -256,4 +257,25 @@ export function sourceWithRow(claims: string[][]): string[][] {
     out[CLAIM_SOURCE] = `b4_metrics#${m[1]}`;
     return out;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Schema v5: B1 split, inheritance defaults.
+// ---------------------------------------------------------------------------
+
+// "legal-en-de-v2.1 · external name: arbitr Legal German" ->
+//   internal "legal-en-de-v2.1", external "arbitr Legal German".
+export function splitB1(answers: Answers): { answers: Answers; split: boolean } {
+  const old = typeof answers.b1_name_version === "string" ? answers.b1_name_version.trim() : "";
+  if (!old) return { answers, split: false };
+  const [internal, ...rest] = old.split(/\s*·\s*/);
+  const external = rest.join(" · ").replace(/^external(?:\s+(?:product\s+)?name)?\s*:\s*/i, "").trim();
+  const a: Answers = { ...answers, b1_internal_id: internal.trim(), b1_external_name: external };
+  delete a.b1_name_version;
+  return { answers: a, split: true };
+}
+
+// Inheriting fields that already have an answer keep it ("This model differs").
+export function differsFor(answers: Answers, inheritingKeys: string[]): string[] {
+  return inheritingKeys.filter((k) => typeof answers[k] === "string" && (answers[k] as string).trim());
 }
