@@ -350,3 +350,4 @@ td.review-cell input { border-color: #e8a33d; background: #fff8ec; }
 .issue-counts { display: flex; flex-wrap: wrap; gap: 6px; }
 .count-bad { color: #b42318; font-weight: 600; }
 .count-ok { color: #1f7a3d; }
+.markdown-box { margin-top: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
