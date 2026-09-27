@@ -585,7 +585,7 @@ function ReviewList({ issues, href }: { issues: Issue[]; href: (key: string) => 
             {[...new Set(warn.filter((i) => i.kind === k).map((i) => i.key))].map((key, n) => (
               <span key={key}>
                 {n > 0 && ", "}
-                <a href={href(key)}>{fieldLabel(key)}</a>
+                <a href={href(key)}>{key === PACK_KEY ? "pack title and type" : fieldLabel(key)}</a>
               </span>
             ))}
           </li>
