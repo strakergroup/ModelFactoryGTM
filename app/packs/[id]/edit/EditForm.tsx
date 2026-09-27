@@ -297,7 +297,9 @@ export default function EditForm(props: Props) {
                     Keep as one pack
                   </button>
                   <span className="muted small">
-                    {splitReason.trim().length}/{SPLIT_REASON_MIN} characters minimum
+                    {splitReason.trim().length < SPLIT_REASON_MIN
+                      ? `${splitReason.trim().length} of ${SPLIT_REASON_MIN} characters minimum`
+                      : "✓ Enough detail"}
                   </span>
                 </form>
               )}
