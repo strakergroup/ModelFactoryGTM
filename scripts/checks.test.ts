@@ -35,7 +35,8 @@ test("sample flags exactly the expected issues", () => {
   assert.deepEqual(kinds(i, "b3_domains"), ["placement"]);
   assert.deepEqual(kinds(i, "b5_error_modes"), ["llm"]);
   assert.deepEqual(kinds(i, "e_claims"), ["model"]);
-  assert.equal(i.length, 15);
+  assert.deepEqual(kinds(i, "b1_internal_id"), ["naming"]);
+  assert.equal(i.length, 16);
 });
 
 test("an approved claim clears the headline's claim and visibility flags", () => {
@@ -213,6 +214,17 @@ test("public model card: Public only, pending for blocked fields, claim wording 
   const card2 = cardMarkdown("x", "y", publicCard({ kind: "model", modelTypes: types, answers: fixed, issues: run({}, fixed) }));
   assert.match(card2, /- Cuts post-editing time by about 40%/);
   assert.ok(!card2.includes("B4 Results row 3") && !card2.includes("Morgan"));
+});
+
+test("model IDs follow Company-BaseName-Size-Variant/Tune-Version", () => {
+  for (const ok of ["Arbitr-MF-5B-DE-Legal-Base-v1", "Arbitr-MF-5B-DE-Legal-Base-v2.1", "Arbitr-Orion-800M-Instruct-v1.5"]) {
+    assert.deepEqual(kinds(run({ name: ok }, { ...base, b1_internal_id: ok, b1_external_name: "x v2.1" }), "b1_internal_id"), [], ok);
+  }
+  for (const bad of ["legal-en-de-v2.1", "arbitr-MF-5B-Base-v1", "Arbitr-MF-Base-v1", "Arbitr-MF-5B-Base", "Arbitr-MF-5G-Base-v1"]) {
+    assert.deepEqual(kinds(run({}, { ...base, b1_internal_id: bad }), "b1_internal_id"), ["naming"], bad);
+  }
+  const t = run({ name: "Something else" }, { ...base, b1_internal_id: "Arbitr-MF-5B-DE-Legal-Base-v2.1" }).filter((i) => i.kind === "title");
+  assert.ok(t.some((i) => /rename it to “Arbitr-MF-5B-DE-Legal-Base-v2.1”/.test(i.message)));
 });
 
 console.log(`\n${passed} passed`);

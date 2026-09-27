@@ -1,10 +1,10 @@
-import { FACTORY_PARTS, MODEL_PARTS, SPLIT_REASON_MIN, fieldsFor, isDone, isNA, sectionOf, type Answers, type Field, type NA } from "./fields";
+import { FACTORY_PARTS, MODEL_PARTS, NAMING_EXAMPLE, NAMING_PATTERN, NAMING_RE, SPLIT_REASON_MIN, fieldsFor, isDone, isNA, sectionOf, type Answers, type Field, type NA } from "./fields";
 
 // The launch-ready checks. Pure functions: the editor runs them live in the
 // browser, the review page shows them, and sign-off uses them to decide
 // whether a pack can become Launch-ready.
 
-export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "model" | "spec" | "split" | "title" | "scale" | "placement" | "llm";
+export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "model" | "naming" | "spec" | "split" | "title" | "scale" | "placement" | "llm";
 export type IssueAction = "create_claim" | "move_to_b5" | "remove_llm";
 export type Issue = { key: string; kind: IssueKind; message: string; blocking: boolean; text?: string; action?: IssueAction };
 
@@ -379,6 +379,20 @@ export function checkPack(input: CheckInput): Issue[] {
     });
   }
 
+  // Model ID must follow the naming convention; the pack title should be that ID.
+  const modelId = textOf(answers, "b1_internal_id").trim();
+  if (modelId && !NAMING_RE.test(modelId)) {
+    issues.push({
+      key: "b1_internal_id",
+      kind: "naming",
+      blocking: true,
+      message: `Model ID “${modelId}” doesn't follow the naming convention ${NAMING_PATTERN}, e.g. ${NAMING_EXAMPLE}.`,
+    });
+  }
+  if (modelId && NAMING_RE.test(modelId) && input.name && input.name.trim() !== modelId) {
+    issues.push({ key: PACK_KEY, kind: "title", blocking: false, message: `Pack title should be the model ID: rename it to “${modelId}”.` });
+  }
+
   // Title names a model version that isn't B1's (review flag, not blocking).
   const titleVersions = versionsIn(input.name ?? "");
   if (titleVersions.length && b1Versions.length && !titleVersions.every((v) => b1Versions.includes(v))) {
@@ -412,6 +426,7 @@ export const ISSUE_TITLE: Record<IssueKind, string> = {
   expired: "Expired metrics",
   evidence: "Broken evidence references",
   model: "Claims for a different model version",
+  naming: "Model ID doesn't follow the naming convention",
   spec: "Specs without measurement conditions",
   split: "Pack covers two products",
   title: "Pack title doesn't match B1",

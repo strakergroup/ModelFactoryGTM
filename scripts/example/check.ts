@@ -12,7 +12,7 @@ for (const i of fi) console.log(`  ${i.blocking ? "BLOCK" : "warn "} ${i.kind} $
 
 const types = ["custom_mt"];
 const eff = effectiveAnswers(model as never, [], f); // every inheriting field uses Part A
-const mi = checkPack({ kind: "model", modelTypes: types, answers: eff, name: "arbitr Legal German v2.1", today: "2026-09-27" });
+const mi = checkPack({ kind: "model", modelTypes: types, answers: eff, name: "Arbitr-MF-5B-DE-Legal-Base-v2.1", today: "2026-09-27" });
 console.log("Model:", completionText(completion("model", types, eff)));
 for (const i of mi) console.log(`  ${i.blocking ? "BLOCK" : "warn "} ${i.kind} ${i.key}: ${i.message}`);
 console.log(fi.length + mi.length === 0 ? "\nCLEAN: no issues" : `\n${fi.length + mi.length} issue(s)`);

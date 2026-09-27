@@ -1,5 +1,13 @@
 # Changelog
 
+## Naming convention — 27 Sep 2026
+
+- **Model IDs** (B1 Internal ID and the pack title) follow **Company-BaseName-Size-Variant/Tune-Version**, e.g. `Arbitr-MF-5B-DE-Legal-Base-v1`:
+  Company is always "Arbitr"; Base name is the model family; Size is the parameter count (M or B); Variant/Tune is language, domain and tune (Base, Instruct, Chat, Code); Version is v plus the iteration number.
+- A B1 Internal ID that doesn't follow it **blocks Launch-ready**; a pack title that isn't the model ID is a review flag. The create form shows the pattern.
+- The customer-facing B1 External product name is unchanged (marketing name).
+- Removed all references to "Tiri"; the team is "arbitr Model Factory".
+
 ## Schema v5 — 27 Sep 2026 (public view, Part A inheritance, workflow, editor)
 
 ### Public-only view

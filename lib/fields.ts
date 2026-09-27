@@ -56,6 +56,18 @@ export const MODEL_TYPES = [
 
 export const SCALES = ["0–1", "0–100", "minutes", "%"];
 
+// Model naming convention: Company - Base name - Size - Variant/Tune - Version.
+export const NAMING_PATTERN = "Company-BaseName-Size-Variant/Tune-Version";
+export const NAMING_EXAMPLE = "Arbitr-MF-5B-DE-Legal-Base-v1";
+export const NAMING_RE = /^Arbitr-[A-Z][A-Za-z0-9]*-\d+(?:\.\d+)?[MB]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*-v\d+(?:\.\d+)*$/;
+export const NAMING_PARTS = [
+  { part: "Company", example: "Arbitr", rule: "Always “Arbitr”" },
+  { part: "Base name", example: "MF", rule: "The model family, capital letter first" },
+  { part: "Size", example: "5B", rule: "Parameter count: M for millions, B for billions" },
+  { part: "Variant/Tune", example: "DE-Legal-Base", rule: "Language, domain and tune (Base, Instruct, Chat, Code), hyphen-separated" },
+  { part: "Version", example: "v1", rule: "v plus the iteration number, e.g. v1 or v2.1" },
+];
+
 export const FACTORY_PARTS: Part[] = [
   {
     id: "A",
@@ -190,7 +202,7 @@ export const MODEL_PARTS: Part[] = [
         id: "B1",
         title: "B1. Identity",
         fields: [
-          t("b1_internal_id", "Internal ID", "The model's internal identifier and version, e.g. legal-en-de-v2.1", "I", req),
+          t("b1_internal_id", "Internal ID", `The model ID, following the naming convention ${NAMING_PATTERN}, e.g. ${NAMING_EXAMPLE}. The pack title uses the same ID.`, "I", req),
           t("b1_external_name", "External product name and version", "The name and version customers see, e.g. arbitr Legal German v2.1", "P", req),
           t("b1_status", "Status", "Research, Beta or GA, and GA date", "P", req),
           t("b1_owner", "Owner", "Accountable person on the model team", "I", req),

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { createPack, restorePack } from "../lib/actions";
 import { blocking, checkPack } from "../lib/checks";
-import { completion, completionText, MODEL_TYPES, typeLabels } from "../lib/fields";
+import { completion, completionText, MODEL_TYPES, NAMING_EXAMPLE, NAMING_PARTS, typeLabels } from "../lib/fields";
 import { effectiveAnswers, revEffective } from "../lib/inherit";
 import { requireName } from "../lib/session";
 import { listArchived, listPacks, type Pack } from "../lib/store";
@@ -89,8 +89,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
 
         <form action={createPack} className="new-pack">
           <h2>Custom Model</h2>
-          <label htmlFor="name">Model name</label>
-          <input id="name" name="name" placeholder="e.g. Legal EN→DE engine v2" required />
+          <label htmlFor="name">Model ID</label>
+          <input id="name" name="name" placeholder={`e.g. ${NAMING_EXAMPLE}`} required />
+          <p className="help">
+            Naming convention: {NAMING_PARTS.map((p) => p.part).join(" - ")}.{" "}
+            {NAMING_PARTS.map((p) => `${p.example} (${p.rule.toLowerCase()})`).join(" · ")}
+          </p>
           <fieldset>
             <legend>Model type (pick all that apply)</legend>
             {MODEL_TYPES.map((m) => (
