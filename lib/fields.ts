@@ -2,7 +2,7 @@
 // Schema v2 (27 Sep 2026): merged duplicates, Required/Optional per field,
 // type-dependent help. See CHANGELOG.md. To add a field, add one line here.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export type Tag = "P" | "N" | "I";
 export const TAG_LABEL: Record<Tag, string> = { P: "Public", N: "Under NDA", I: "Internal" };
@@ -23,6 +23,8 @@ type Common = {
   // Replaces the help entirely for a model type (first active match wins).
   helpReplaceFor?: Partial<Record<string, string>>;
   showFor?: string; // only shown when this model type is active
+  // A measured spec: any number in it must say what it was measured under.
+  measured?: boolean;
   subOf?: string; // rendered as an indented sub-note under another field
 };
 export type TextField = Common & { kind: "text" };
@@ -257,8 +259,8 @@ export const MODEL_PARTS: Part[] = [
         id: "B6",
         title: "B6. Runtime characteristics",
         fields: [
-          t("b6_latency", "Latency", "Median and 95th-percentile per request or per 1,000 words", "P"),
-          t("b6_throughput", "Throughput", "Sustained volume per hour", "N"),
+          t("b6_latency", "Latency", "Median and 95th-percentile per request or per 1,000 words, and the conditions measured under (hardware, load, document type or test set)", "P", { measured: true }),
+          t("b6_throughput", "Throughput", "Sustained volume per hour, and the conditions measured under (hardware, load, region)", "N", { measured: true }),
           t("b6_limits", "Context or input limits", "Max segment, document or token length", "P"),
           t("b6_formats", "Supported formats", "File and content formats it handles directly", "P"),
           t("b6_unit_cost", "Unit cost", "Inference cost per 1,000 words or tokens", "I"),
@@ -466,7 +468,11 @@ export const MODEL_PARTS: Part[] = [
             key: "e_claims",
             label: "Claims register",
             help:
-              "Exact wording only. A claim counts as approved only when it has Evidence (section + test set) and Approved by. Every public number or comparison must match an approved claim.",
+              "Exact wording only. A claim counts as approved only when it has Evidence (section + test set, e.g. “B4 Results row 3”) and Approved by. " +
+              "A Public field needs a registered claim only if it states a performance result (98.6% enforcement, COMET 0.87), an improvement or delta (+6 pts, saves 22 minutes), " +
+              "or a comparison with another product or engine (faster than, vs, replaces, drop-in). Exempt: product specs (latency, limits, formats) and commercial terms " +
+              "(timelines, pilot scope, retention periods), but a measured spec with numbers must name the conditions it was measured under. Evidence that cites a field " +
+              "which no longer exists is flagged as a broken reference.",
             tag: "P",
             required: true,
             columns: [

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { addComment, requestChanges, resolveComment, signOff } from "../../../lib/actions";
 import { completion, completionText, fieldLabel, helpFor, isAnswered, isNA, partsFor, typeLabels, SIGNOFF_ROLES, type Answers, type Field, type NA } from "../../../lib/fields";
-import { blocking, checkPack, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../lib/checks";
+import { blocking, checkPack, isStale, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../lib/checks";
 import { requireName } from "../../../lib/session";
 import { currentSignoffs, FACTORY_ID, getPack, getPackAtLeast, listPacks, type Comment } from "../../../lib/store";
 import Header, { ErrorNote, StatusPill, TagPill } from "../../Header";
@@ -44,7 +44,12 @@ export default async function PackPage({
   const requestProcess = typeof factory?.pack.answers.a9_request_process === "string" ? factory.pack.answers.a9_request_process : "";
   const byField = (key: string) => pack.comments.filter((x) => x.field === key);
   const changedCount = prevAnswers ? parts.flatMap((p) => p.sections.flatMap((s) => s.fields)).filter(changed).length : 0;
-  const signed = new Map(currentSignoffs(pack).map((s) => [s.role, s]));
+  // Sign-offs from before the migration, or on a Rev that now has blocking issues, are stale.
+  const revBlocked = v > 0 && blockers.length > 0;
+  const onRev = currentSignoffs(pack).map((s) => ({ ...s, stale: isStale(s.at, pack.migratedAt, revBlocked) }));
+  const signed = new Map(onRev.filter((s) => !s.stale).map((s) => [s.role, s]));
+  const staleByRole = new Map(onRev.filter((s) => s.stale).map((s) => [s.role, s]));
+  const reviewFields = pack.reviewFields ?? [];
   const inReview = pack.status === "in_review";
   const reviewable = inReview || pack.status === "launch_ready";
   const models = pack.kind === "factory" ? (await listPacks()).filter((p) => p.kind === "model") : [];
@@ -59,6 +64,7 @@ export default async function PackPage({
           {pack.kind === "model" && <>{typeLabels(types, current ? current.otherType : pack.otherType)} · </>}
           {completionText(c)} ·{" "}
           {current ? <>Rev {v} published {when(current.publishedAt)} by {current.publishedBy}</> : "Not published yet"}
+          {reviewFields.length > 0 && <span className="review-badge">{reviewFields.length} field{reviewFields.length === 1 ? "" : "s"} need{reviewFields.length === 1 ? "s" : ""} review</span>}
         </p>
         <ErrorNote error={error} />
         {published && <p className="ok-box">Published Rev {published}. Share this page&apos;s link with reviewers.</p>}
@@ -108,22 +114,30 @@ export default async function PackPage({
           <div className="signoff-grid">
             {SIGNOFF_ROLES.map((r) => {
               const s = signed.get(r.role);
+              const stale = !s ? staleByRole.get(r.role) : undefined;
               return (
-                <div key={r.role} className={`signoff-card ${s ? "signed" : ""}`}>
+                <div key={r.role} className={`signoff-card ${s ? "signed" : stale ? "stale" : ""}`}>
                   <div className="signoff-role">{r.label}</div>
                   <div className="muted small">{r.scope}</div>
+                  {stale && (
+                    <div className="small">
+                      <div className="stale-label">Stale – re-approval needed</div>
+                      {stale.by} · {when(stale.at)}
+                      <div>{pack.migratedAt && stale.at < pack.migratedAt ? "Given before the move to the new structure." : "This Rev now has blocking issues."}</div>
+                    </div>
+                  )}
                   {s ? (
                     <div className="small">✓ {s.by} · {when(s.at)}{s.note ? <div className="muted">“{s.note}”</div> : null}</div>
-                  ) : inReview ? (
+                  ) : inReview && !revBlocked ? (
                     <form action={signOff} className="signoff-form">
                       <input type="hidden" name="id" value={id} />
                       <input type="hidden" name="role" value={r.role} />
                       <input name="note" placeholder="Note (optional)" aria-label={`${r.label} note`} />
                       <button type="submit">Sign off Rev {v} as {r.label}</button>
                     </form>
-                  ) : (
-                    <div className="muted small">Waiting</div>
-                  )}
+                  ) : !stale ? (
+                    <div className="muted small">{revBlocked ? "Blocked until the issues above are fixed" : "Waiting"}</div>
+                  ) : null}
                 </div>
               );
             })}
@@ -177,7 +191,7 @@ export default async function PackPage({
                   return (
                     <div key={f.key} id={`f-${f.key}`} className={`review-field ${f.subOf ? "sub" : ""} ${issuesFor(f.key).some((i) => i.blocking) ? "flagged" : ""}`}>
                       <div className="field-head">
-                        <span className="field-label">{f.subOf ? "↳ " : ""}{f.label}{f.required && <span className="req">Required</span>}{changed(f) && <span className="changed-dot">changed</span>}</span>
+                        <span className="field-label">{f.subOf ? "↳ " : ""}{f.label}{f.required && <span className="req">Required</span>}{reviewFields.includes(f.key) && <span className="review-badge">Needs review</span>}{changed(f) && <span className="changed-dot">changed</span>}</span>
                         <TagPill tag={f.tag} />
                       </div>
                       <p className="help">{helpFor(f, types)}</p>

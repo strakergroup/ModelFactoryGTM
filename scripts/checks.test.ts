@@ -1,11 +1,11 @@
 // Rule tests for lib/checks.ts. Run: npx tsx scripts/checks.test.ts
 import assert from "node:assert/strict";
 import sample from "./sample-v1.json";
-import { migrateAnswers } from "../lib/migrate";
-import { checkPack, type CheckInput } from "../lib/checks";
+import { backfillPairs, gaOrBetaPairs, migrateAnswers, repointEvidence, reviewTargets, stripFromLabels } from "../lib/migrate";
+import { brokenReferences, checkPack, isStale, type CheckInput } from "../lib/checks";
 
 const types = ["custom_mt", "customer_trained"];
-const base = migrateAnswers(sample as never).answers;
+const base = backfillPairs(repointEvidence(migrateAnswers(sample as never).answers).answers).answers;
 const run = (patch: Partial<CheckInput> = {}, answers = base) =>
   checkPack({ kind: "model", modelTypes: types, answers, today: "2026-09-27", ...patch });
 const kinds = (issues: ReturnType<typeof run>, key: string) => issues.filter((i) => i.key === key).map((i) => i.kind).sort();
@@ -23,7 +23,11 @@ test("sample flags exactly the expected issues", () => {
   assert.deepEqual(kinds(i, "d1_margin"), ["required"]);
   assert.deepEqual(kinds(i, "b7_data_handling"), ["required"]);
   assert.deepEqual(kinds(i, "_pack"), ["split"]);
-  assert.equal(i.length, 10);
+  assert.deepEqual(kinds(i, "b6_latency"), ["spec"]);
+  assert.deepEqual(kinds(i, "b3_domains"), ["placement"]);
+  assert.deepEqual(kinds(i, "b5_error_modes"), ["llm"]);
+  assert.deepEqual(kinds(i, "e_claims"), []);
+  assert.equal(i.length, 13);
 });
 
 test("an approved claim clears the headline's claim and visibility flags", () => {
@@ -67,6 +71,52 @@ test("migration drops nothing: every old answer's text survives somewhere", () =
   for (const [k, v] of Object.entries(sample)) {
     if (typeof v === "string") assert.ok(all.includes(JSON.stringify(v).slice(1, -1)), `lost ${k}`);
   }
+});
+
+test("evidence citing a removed field is repointed to its replacement", () => {
+  const claims = base.e_claims as string[][];
+  assert.equal(claims[0][2], "B4 Results row 3: pilot, 3 legal linguists, 40k words, 19 Sep 2026");
+  assert.equal(claims[0][6], "b4_metrics");
+});
+
+test("unknown fields and missing B4 rows are broken references", () => {
+  assert.deepEqual(brokenReferences("B4 Results row 3 + C1 Terminology", 3), []);
+  assert.equal(brokenReferences("C1 Post-edit effort", 3).length, 1);
+  assert.equal(brokenReferences("B4 Results row 7", 3).length, 1);
+  const a = { ...base, e_claims: [["Claim", "", "C1 Quality by pair: EN→DE", "P", "Morgan", "", ""]] };
+  assert.deepEqual(kinds(run({}, a), "e_claims"), ["evidence"]);
+});
+
+test("sign-offs before the migration, or on a Rev with blocking issues, are stale", () => {
+  assert.equal(isStale("2026-09-27T10:55:00Z", "2026-09-27T11:19:00Z", false), true);
+  assert.equal(isStale("2026-09-27T12:00:00Z", "2026-09-27T11:19:00Z", true), true);
+  assert.equal(isStale("2026-09-27T12:00:00Z", "2026-09-27T11:19:00Z", false), false);
+});
+
+test("migration review flags cover every merged or moved field", () => {
+  const r = reviewTargets(migrateAnswers(sample as never).answers).sort();
+  assert.deepEqual(r, ["b2_oversight_assurance", "b3_domains", "b4_metrics", "b5_error_modes", "b7_how_used", "b7_routing_note", "d1_packaging", "d3_deliverables", "d3_onboarding_ctm"]);
+});
+
+test("one GA/Beta pair in C1 backfills empty B4 language-pair cells", () => {
+  assert.deepEqual(gaOrBetaPairs("EN→DE (Beta, GA 3 Nov), EN→FR (Research)"), ["EN→DE"]);
+  assert.deepEqual(gaOrBetaPairs("EN→DE (GA), EN→FR (Beta)"), ["EN→DE", "EN→FR"]);
+  assert.deepEqual((base.b4_metrics as string[][]).map((r) => r[1]), ["EN→DE", "EN→DE", "EN→DE"]);
+});
+
+test("'From <old field>:' labels are stripped", () => {
+  assert.equal(stripFromLabels("From Typical errors: A\n\nFrom Safety risks: B"), "A\n\nB");
+});
+
+test("claim rule: commercial terms and timelines are exempt, improvements are not", () => {
+  const a = { ...base, c4_time_to_model: "4–6 weeks from data receipt", d3_eval_offer: "Free 2-week bake-off on up to 50k words", c4_ownership: "Deleted within 30 days" };
+  const i = run({}, a);
+  for (const k of ["c4_time_to_model", "d3_eval_offer", "c4_ownership"]) assert.deepEqual(kinds(i, k), []);
+  assert.deepEqual(kinds(run({}, { ...base, b1_one_line: "Cuts review time by 17 minutes per contract" }), "b1_one_line"), ["claim"]);
+});
+
+test("measured specs with conditions pass", () => {
+  assert.deepEqual(kinds(run({}, { ...base, b6_latency: "Median 0.9s, p95 2.4s per 1,000 words, measured on one L4 GPU at 37 concurrent requests" }), "b6_latency"), []);
 });
 
 console.log(`\n${passed} passed`);

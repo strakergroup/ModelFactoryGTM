@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import type { Answers, NA } from "./fields";
-import { blocking, checkPack } from "./checks";
+import { blocking, checkPack, isStale } from "./checks";
 import { MODEL_TYPES, SIGNOFF_ROLES } from "./fields";
 import { requireName } from "./session";
 import { ConflictError, currentSignoffs, deletePackFile, getPack, newPack, savePack, type Pack } from "./store";
@@ -45,6 +45,7 @@ export async function saveDraft(
   etag: string,
   meta?: { name: string; modelTypes: string[]; otherType: string },
   na?: NA,
+  review?: { fields: string[]; cells: string[]; events: { action: string; detail?: string }[] },
 ): Promise<{ ok: true; etag: string; at: string } | { ok: false; error: string }> {
   const by = await requireName();
   const found = await getPack(id);
@@ -55,6 +56,12 @@ export async function saveDraft(
   }
   pack.answers = answers;
   if (na) pack.na = Object.fromEntries(Object.entries(na).filter(([, r]) => r.trim()).map(([k, r]) => [k, r.slice(0, 500)]));
+  if (review) {
+    // Review flags can only be cleared from the browser, never added.
+    pack.reviewFields = (pack.reviewFields ?? []).filter((k) => review.fields.includes(k));
+    pack.reviewCells = (pack.reviewCells ?? []).filter((k) => review.cells.includes(k));
+    for (const e of review.events.slice(0, 20)) pack.activity.push({ at: now(), by, action: e.action.slice(0, 200), detail: e.detail?.slice(0, 1000) });
+  }
   if (meta && pack.kind === "model") {
     pack.name = meta.name.trim() || "Untitled model";
     // Answers for a type that's unticked are kept, just hidden, so re-ticking it brings them back.
@@ -153,11 +160,16 @@ export async function signOff(formData: FormData) {
   if (!label) back(id, "Unknown sign-off role.");
   const rev = await update(id, (p) => {
     if (p.status !== "in_review") return "Only packs in review can be signed off.";
-    if (currentSignoffs(p).some((s) => s.role === role)) return `${label} has already signed off Rev ${p.version}.`;
+    const fresh = () => {
+      const revBlocked = blocking(checkOf(p)).length > 0;
+      return currentSignoffs(p).filter((s) => !isStale(s.at, p.migratedAt, revBlocked));
+    };
+    if (fresh().some((s) => s.role === role)) return `${label} has already signed off Rev ${p.version}.`;
     p.signoffs.push({ version: p.version, role, by, note, at: now() });
     p.activity.push({ at: now(), by, action: `signed off Rev ${p.version} as ${label}`, detail: note ?? undefined });
     // Launch-ready needs all four sign-offs AND no blocking issues on the published Rev.
-    if (new Set(currentSignoffs(p).map((s) => s.role)).size === SIGNOFF_ROLES.length) {
+    // Only sign-offs that aren't stale count towards Launch-ready.
+    if (new Set(fresh().map((s) => s.role)).size === SIGNOFF_ROLES.length) {
       const open = blocking(checkOf(p));
       if (open.length) {
         p.activity.push({ at: now(), by: "System", action: `Rev ${p.version} has all four sign-offs but can't be launch-ready`, detail: `${open.length} blocking issue(s)` });

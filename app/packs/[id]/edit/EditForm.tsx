@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { clearSplitOverride, publishPack, saveDraft, saveSplitOverride } from "../../../../lib/actions";
-import { blocking, checkPack, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../../lib/checks";
+import { blocking, checkPack, ISSUE_TITLE, llmSentences, PACK_KEY, thinSentences, type Issue } from "../../../../lib/checks";
 import {
   MODEL_TYPES,
   NA_MIN,
@@ -20,7 +20,7 @@ import {
   type NA,
   type TableField,
 } from "../../../../lib/fields";
-import { plusSixMonths } from "../../../../lib/migrate";
+import { plusSixMonths, stripFromLabels } from "../../../../lib/migrate";
 
 type Props = {
   id: string;
@@ -34,6 +34,8 @@ type Props = {
   version: number;
   splitOverride: { reason: string; by: string; at: string } | null;
   factoryRequestProcess: string;
+  initialReviewFields: string[];
+  initialReviewCells: string[];
 };
 
 const CLAIMS_KEY = "e_claims";
@@ -53,6 +55,11 @@ export default function EditForm(props: Props) {
   const [message, setMessage] = useState("");
   const first = useRef(true);
   const etag = useRef(props.initialEtag);
+  // Fields/cells that got migrated content; cleared by editing or "Mark reviewed".
+  const [reviewFields, setReviewFields] = useState<string[]>(props.initialReviewFields);
+  const [reviewCells, setReviewCells] = useState<string[]>(props.initialReviewCells);
+  const [touched, setTouched] = useState<Set<string>>(new Set());
+  const events = useRef<{ action: string; detail?: string }[]>([]);
 
   useEffect(() => {
     if (first.current) {
@@ -63,12 +70,19 @@ export default function EditForm(props: Props) {
     const timer = setTimeout(async () => {
       setState("saving");
       try {
-        const res = await saveDraft(id, answers, etag.current, kind === "model" ? { name, modelTypes, otherType } : undefined, na);
+        const sent = events.current;
+        events.current = [];
+        const res = await saveDraft(id, answers, etag.current, kind === "model" ? { name, modelTypes, otherType } : undefined, na, {
+          fields: reviewFields,
+          cells: reviewCells,
+          events: sent,
+        });
         if (res.ok) {
           etag.current = res.etag;
           setState("saved");
           setMessage(`Saved ${new Date(res.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
         } else {
+          events.current = [...sent, ...events.current];
           setState("error");
           setMessage(res.error);
         }
@@ -78,7 +92,7 @@ export default function EditForm(props: Props) {
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [answers, na, name, modelTypes, otherType, id, kind]);
+  }, [answers, na, name, modelTypes, otherType, reviewFields, reviewCells, id, kind]);
 
   // Warn before leaving with unsaved typing.
   useEffect(() => {
@@ -89,7 +103,42 @@ export default function EditForm(props: Props) {
     return () => window.removeEventListener("beforeunload", warn);
   }, [state]);
 
-  const setText = (key: string, value: string) => setAnswers((a) => ({ ...a, [key]: value }));
+  const setText = (key: string, value: string) => {
+    if (reviewFields.includes(key)) setTouched((t) => new Set(t).add(key));
+    setAnswers((a) => ({ ...a, [key]: value }));
+  };
+  // Saving a reviewed field strips the "From <old field>:" labels and clears its badge.
+  const markReviewed = (key: string, how: string) => {
+    const v = answers[key];
+    if (typeof v === "string" && /^From [^:\n]+:/m.test(v)) setAnswers((a) => ({ ...a, [key]: stripFromLabels(v) }));
+    setReviewFields((r) => r.filter((k) => k !== key));
+    setReviewCells((c) => c.filter((x) => !x.startsWith(`${key}:`)));
+    setTouched((t) => {
+      const n = new Set(t);
+      n.delete(key);
+      return n;
+    });
+    events.current.push({ action: `reviewed ${fieldLabel(key)} (${how})` });
+  };
+  // One-click fixes offered on flags.
+  const moveToB5 = () => {
+    const b3 = String(answers.b3_domains ?? "");
+    const moving = thinSentences(b3);
+    if (!moving.length) return;
+    const kept = moving.reduce((txt, m) => txt.replace(m, ""), b3).replace(/\s{2,}/g, " ").replace(/^[\s.;]+|[\s;]+$/g, "").trim();
+    const b5 = String(answers.b5_weaknesses ?? "").trim();
+    setAnswers((a) => ({ ...a, b3_domains: kept, b5_weaknesses: [b5, ...moving].filter(Boolean).join("\n") }));
+    events.current.push({ action: "moved thin-area text from B3 to B5 Known weaknesses and gaps", detail: moving.join(" ") });
+  };
+  const removeLlm = () => {
+    const v = String(answers.b5_error_modes ?? "");
+    const gone = llmSentences(v);
+    let next = v;
+    for (const g of gone) next = next.replace(g, "");
+    next = next.replace(/;\s*(?=\n|$)/g, "").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    setAnswers((a) => ({ ...a, b5_error_modes: next }));
+    events.current.push({ action: "removed LLM-only text from B5 Error modes", detail: gone.join(" ") });
+  };
   const table = (f: TableField) => (Array.isArray(answers[f.key]) ? (answers[f.key] as string[][]) : emptyTable(f));
   const setTable = (key: string, rows: string[][]) => setAnswers((a) => ({ ...a, [key]: rows }));
 
@@ -126,6 +175,9 @@ export default function EditForm(props: Props) {
       <div className="edit-bar">
         <div>
           <strong>{completionText(c)}</strong>
+          {reviewFields.length > 0 && (
+            <span className="review-badge">{reviewFields.length} field{reviewFields.length === 1 ? "" : "s"} need{reviewFields.length === 1 ? "s" : ""} review</span>
+          )}
           <span className={`save-state ${state}`}>
             {state === "saving" ? "Saving…" : state === "dirty" ? "Unsaved changes" : message}
           </span>
@@ -259,6 +311,7 @@ export default function EditForm(props: Props) {
                         {f.subOf ? "↳ " : ""}
                         {f.label}
                         {f.required && <span className="req">Required</span>}
+                        {reviewFields.includes(f.key) && <span className="review-badge">Needs review</span>}
                       </label>
                       <span className={`tag t${f.tag.toLowerCase()}`}>{f.tag} · {TAG_LABEL[f.tag]}</span>
                     </div>
@@ -273,11 +326,33 @@ export default function EditForm(props: Props) {
                         aria-label={`${f.label}: reason for N/A`}
                       />
                     ) : f.kind === "text" ? (
-                      <textarea id={f.key} rows={rowsFor((answers[f.key] as string) ?? "")} value={(answers[f.key] as string) ?? ""} onChange={(e) => setText(f.key, e.target.value)} />
+                      <textarea
+                        id={f.key}
+                        rows={rowsFor((answers[f.key] as string) ?? "")}
+                        value={(answers[f.key] as string) ?? ""}
+                        onChange={(e) => setText(f.key, e.target.value)}
+                        onBlur={() => touched.has(f.key) && markReviewed(f.key, "edited")}
+                      />
                     ) : (
-                      <TableEditor field={f} rows={table(f)} onChange={(rows) => setTable(f.key, rows)} />
+                      <TableEditor
+                        field={f}
+                        rows={table(f)}
+                        flaggedCells={reviewCells}
+                        onChange={(rows, cell) => {
+                          if (cell) setReviewCells((c) => c.filter((x) => x !== cell));
+                          setTable(f.key, rows);
+                        }}
+                      />
                     )}
 
+                    {reviewFields.includes(f.key) && (
+                      <div className="flag flag-review">
+                        Moved or merged here by the new structure. Check it reads right; editing it or marking it reviewed removes any “From …:” labels.
+                        <button type="button" className="secondary small-button" onClick={() => markReviewed(f.key, "marked reviewed")}>
+                          Mark reviewed
+                        </button>
+                      </div>
+                    )}
                     <label className="check small na-toggle">
                       <input type="checkbox" checked={isNaOpen} onChange={(e) => toggleNa(f.key, e.target.checked)} /> Doesn&apos;t apply (N/A)
                     </label>
@@ -285,9 +360,19 @@ export default function EditForm(props: Props) {
                     {own.map((i, n) => (
                       <div key={n} className={`flag ${i.blocking ? "flag-block" : "flag-warn"}`}>
                         {i.message}
-                        {i.kind === "claim" && (
+                        {i.action === "create_claim" && (
                           <button type="button" className="secondary small-button" onClick={() => createClaim(f, i.text ?? String(answers[f.key] ?? ""))}>
                             Create claim from this field
+                          </button>
+                        )}
+                        {i.action === "move_to_b5" && (
+                          <button type="button" className="secondary small-button" onClick={moveToB5}>
+                            Move to B5 Known weaknesses and gaps
+                          </button>
+                        )}
+                        {i.action === "remove_llm" && (
+                          <button type="button" className="secondary small-button" onClick={removeLlm}>
+                            Remove LLM-only text
                           </button>
                         )}
                       </div>
@@ -303,7 +388,17 @@ export default function EditForm(props: Props) {
   );
 }
 
-function TableEditor({ field, rows, onChange }: { field: TableField; rows: string[][]; onChange: (r: string[][]) => void }) {
+function TableEditor({
+  field,
+  rows,
+  onChange,
+  flaggedCells = [],
+}: {
+  field: TableField;
+  rows: string[][];
+  onChange: (r: string[][], editedCell?: string) => void;
+  flaggedCells?: string[];
+}) {
   const measured = field.columns.findIndex((c) => c.name === "Date measured");
   const revalidate = field.columns.findIndex((c) => c.name === "Re-validate by");
   const source = field.columns.findIndex((c) => c.name === "Source field");
@@ -316,6 +411,7 @@ function TableEditor({ field, rows, onChange }: { field: TableField; rows: strin
         if (c === measured && revalidate >= 0 && !row[revalidate]) next[revalidate] = plusSixMonths(v);
         return next;
       }),
+      `${field.key}:${r}:${c}`,
     );
   return (
     <div className="table-wrap">
@@ -334,8 +430,9 @@ function TableEditor({ field, rows, onChange }: { field: TableField; rows: strin
                 {field.columns.map((col, c) => {
                   const cell = row[c] ?? "";
                   if (field.presetRows && c === 0) return <td key={c} className="preset">{cell}</td>;
+                  const flagged = flaggedCells.includes(`${field.key}:${r}:${c}`);
                   return (
-                    <td key={c}>
+                    <td key={c} className={flagged ? "review-cell" : ""} title={flagged ? "Filled automatically: check it" : undefined}>
                       {col.type === "select" ? (
                         <select aria-label={col.name} value={cell} onChange={(e) => set(r, c, e.target.value)}>
                           <option value="">—</option>
@@ -346,6 +443,7 @@ function TableEditor({ field, rows, onChange }: { field: TableField; rows: strin
                       )}
                       {c === source && cell && <a className="small" href={`#ed-${cell}`}>{fieldLabel(cell)} ↗</a>}
                       {c === revalidate && expired && <span className="flag-inline">Past re-validate date</span>}
+                      {flagged && <span className="review-inline">Check: filled from C1</span>}
                     </td>
                   );
                 })}

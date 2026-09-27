@@ -307,3 +307,16 @@ tr.expired-row td { background: #fff4f4; }
   .flag-ok { background: #16301f; color: #7ddc9b; border-color: #24462f; }
   tr.expired-row td { background: #3a1c1c; }
 }
+
+/* Per-field review flags and stale sign-offs */
+.review-badge { margin-left: 8px; font-size: 11px; font-weight: 700; color: #7a4a06; background: #fff1db; padding: 1px 8px; border-radius: 999px; vertical-align: middle; white-space: nowrap; }
+.flag-review { background: #fff8ec; color: #7a4a06; border: 1px dashed #e8c07a; }
+td.review-cell input { border-color: #e8a33d; background: #fff8ec; }
+.review-inline { display: block; font-size: 11px; color: #a15c07; font-weight: 600; margin-top: 2px; }
+.signoff-card.stale { border-color: var(--border); background: var(--bg); color: var(--muted); }
+.stale-label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: none; }
+@media (prefers-color-scheme: dark) {
+  .review-badge { background: #3a2a14; color: #ffc27a; }
+  .flag-review { background: #2a2012; color: #ffc27a; border-color: #5c4420; }
+  td.review-cell input { background: #2a2012; }
+}

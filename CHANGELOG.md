@@ -1,5 +1,22 @@
 # Changelog
 
+## Schema v3 — 27 Sep 2026 (follow-up fixes to the v2 migration)
+
+Runs once per pack when it's next opened, after the v1 → v2 step.
+
+| # | Change | Behaviour |
+| :- | :- | :- |
+| 1 | **Evidence integrity** | Claims Evidence that cites a renamed or removed field is repointed to its replacement (e.g. "C1 Post-edit effort" → "B4 Results row 3", matched to the B4 row with those numbers); an empty Source field is filled. Evidence citing a field or B4 row that doesn't exist shows **Broken evidence reference** and blocks Launch-ready. |
+| 2 | **Stale sign-offs** | A sign-off given before the pack's schema migration, or on a Rev that now has blocking issues, shows grey as **Stale – re-approval needed** and doesn't count towards Launch-ready. |
+| 3 | **Per-field review flag** | Every field that received merged or moved content shows **Needs review** until an editor edits it or clicks **Mark reviewed**. The pack header and home card show the count. |
+| 4 | **Clean-up** | Editing or marking a field reviewed strips the "From <old field>:" labels. For MT-only packs, Error modes sentences about hallucination, toxicity or prompt injection are flagged with a one-click **Remove LLM-only text** (logged in the activity log). |
+| 5 | **Backfill** | If C1 lists exactly one pair at GA or Beta, it fills empty B4 "Language pair / Scope" cells; those cells are highlighted until edited or the field is marked reviewed. |
+| 6 | **Claim rule, explicit** | A Public field needs a registered claim only for a performance result, an improvement or delta, or a comparison with another product or engine. Specs and commercial terms (timelines, pilot scope, retention, discounts) are exempt; time amounts count only as an improvement ("saves 22 minutes"). New blocking check: measured specs (B6 Latency, B6 Throughput) with numbers must name their conditions (hardware, load, document type, region or test set). The rule is in the Part E help text. |
+| 7 | **B3 thin areas** | Text in B3 about thin, weak or missing coverage is flagged with a one-click **Move to B5 Known weaknesses and gaps** (logged). |
+
+New check kinds: Broken evidence reference and Spec without measurement conditions
+(both block); Text in the wrong field and LLM-only content (review flags, don't block).
+
 ## Schema v2 — 27 Sep 2026
 
 Goal: record the right information once, in the right place. Packs migrate

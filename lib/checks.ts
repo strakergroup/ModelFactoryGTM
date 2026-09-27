@@ -1,11 +1,12 @@
-import { fieldsFor, isDone, isNA, sectionOf, type Answers, type Field, type NA } from "./fields";
+import { FACTORY_PARTS, MODEL_PARTS, fieldsFor, isDone, isNA, sectionOf, type Answers, type Field, type NA } from "./fields";
 
 // The launch-ready checks. Pure functions: the editor runs them live in the
 // browser, the review page shows them, and sign-off uses them to decide
 // whether a pack can become Launch-ready.
 
-export type IssueKind = "required" | "claim" | "visibility" | "expired" | "scale" | "split";
-export type Issue = { key: string; kind: IssueKind; message: string; blocking: boolean; text?: string };
+export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "spec" | "split" | "scale" | "placement" | "llm";
+export type IssueAction = "create_claim" | "move_to_b5" | "remove_llm";
+export type Issue = { key: string; kind: IssueKind; message: string; blocking: boolean; text?: string; action?: IssueAction };
 
 export type CheckInput = {
   kind: "factory" | "model";
@@ -33,8 +34,15 @@ const PERF_PATTERNS = [
   /(?:^|[\s(])([+−±]\s?\d+(?:[.,]\d+)?)/g,
   /\b(?:COMET(?:-22)?|chrF\+*|BLEU|MQM|TER|F1)\b[^\d\n]{0,15}?(\d+(?:[.,]\d+)?)/gi,
   /(\d+(?:[.,]\d+)?)\s*(?:COMET|chrF|BLEU)\b/gi,
-  /(\d+(?:[.,]\d+)?)\s*(?:minutes?|mins?|hours?|pts|points|×|x)(?![a-z])/gi,
+  /(\d+(?:[.,]\d+)?)\s*(?:pts|points|×|x)(?![a-z])/gi,
 ];
+
+// Time counts as a claim only when it's an improvement ("saves 22 minutes"),
+// not a commercial term ("replies within 2 working days", "4–6 weeks").
+const IMPROVEMENT = /\b(saves?|saved|saving|cuts?|reduc\w*|faster|less|fewer|shorter|improv\w*|drops?)\b|→|->/i;
+const TIME_AMOUNT = /(\d+(?:[.,]\d+)?)\s*(?:minutes?|mins?)(?![a-z])/gi;
+// Commercial terms are exempt even with a %: discounts, margins, retention.
+const COMMERCIAL = /\b(discount|off list|rebate|margin|retention|retained|uptime|SLA)\b/i;
 
 // Units and dates are not claims: "per 1,000 words", "12 Sep 2026", "2026-09-12", "v2.1".
 function stripNoise(s: string): string {
@@ -59,8 +67,10 @@ function norm(n: string): string {
 
 function perfNumbers(sentence: string): string[] {
   const s = stripNoise(sentence);
+  if (COMMERCIAL.test(s)) return [];
   const out = new Set<string>();
   for (const re of PERF_PATTERNS) for (const m of s.matchAll(re)) out.add(norm(m[1]));
+  if (IMPROVEMENT.test(s)) for (const m of s.matchAll(TIME_AMOUNT)) out.add(norm(m[1]));
   return [...out].filter(Boolean);
 }
 
@@ -101,6 +111,43 @@ function valueCells(f: Field, answers: Answers): string[] {
 }
 
 const textOf = (answers: Answers, key: string) => (typeof answers[key] === "string" ? (answers[key] as string) : "");
+
+// A measured spec with numbers must say what it was measured under.
+const CONDITIONS = /\b(measured|under|load|concurren\w*|batch|GPU|CPU|hardware|instance|region|document type|documents? of|test set|benchmark|on\s+(?:a|an|our|the)\s+\w+)\b/i;
+
+// Text in B3 about thin or weak coverage belongs in B5.
+export const THIN = /\b(thin|weak(?:er|ness)?|limited|sparse|gaps?|poor(?:er)?|lacks?|lacking|not covered|under-?represented)\b/i;
+export const thinSentences = (s: string) => sentences(s).filter((x) => THIN.test(x));
+
+// LLM-only content that doesn't belong in an MT model's Error modes.
+export const LLM_ONLY = /\b(hallucinat\w*|toxic\w*|prompt[- ]injection)\b/i;
+export const llmSentences = (s: string) => s.split(/(?<=[.;!?])\s+|\n+/).map((x) => x.trim()).filter((x) => x && LLM_ONLY.test(x));
+
+// Evidence references like "B4 Results row 3", "C1 Terminology", "A9 Request process".
+const SECTION_LABELS = new Map<string, string[]>();
+for (const part of [...FACTORY_PARTS, ...MODEL_PARTS]) for (const s of part.sections) SECTION_LABELS.set(s.id, s.fields.map((f) => f.label.toLowerCase()));
+
+export function brokenReferences(evidence: string, b4Rows: number): string[] {
+  const broken: string[] = [];
+  for (const m of evidence.matchAll(/\b([A-E]\d)\s+([A-Z][A-Za-z&'’/ -]*?)(?=\s*(?:row\s+\d+|[:,;+()]|$))(?:\s*row\s+(\d+))?/g)) {
+    const [whole, section, rawLabel, row] = m;
+    const labels = SECTION_LABELS.get(section);
+    const label = rawLabel.trim().toLowerCase();
+    if (!labels) {
+      broken.push(whole.trim());
+      continue;
+    }
+    const known = labels.some((l) => l === label || l.startsWith(label) || label.startsWith(l));
+    if (!known) broken.push(whole.trim());
+    else if (row && section === "B4" && (Number(row) < 1 || Number(row) > b4Rows)) broken.push(`${whole.trim()} (B4 has ${b4Rows} row${b4Rows === 1 ? "" : "s"})`);
+  }
+  return broken;
+}
+
+// A sign-off stops counting if it predates a schema migration, or if the Rev it approved now has blocking issues.
+export function isStale(signedAt: string, migratedAt: string | undefined, revHasBlocking: boolean): boolean {
+  return revHasBlocking || Boolean(migratedAt && signedAt < migratedAt);
+}
 
 export function checkPack(input: CheckInput): Issue[] {
   const { kind, modelTypes, answers } = input;
@@ -157,6 +204,7 @@ export function checkPack(input: CheckInput): Issue[] {
         key: f.key,
         kind: "claim",
         blocking: true,
+        action: "create_claim",
         text: unregistered.join(" "),
         message: `Unregistered public claim: ${quote(unregistered)} doesn't match an approved claim in Part E (approved = has Evidence and Approved by).`,
       });
@@ -183,7 +231,63 @@ export function checkPack(input: CheckInput): Issue[] {
     });
   }
 
-  // 5. Scale mismatch: COMET/chrF on 0–1 in B4, integer deltas in C4 uplift (warning).
+  // 5. Evidence that cites a field or B4 row that doesn't exist.
+  const claimRows = Array.isArray(answers.e_claims) ? (answers.e_claims as string[][]) : [];
+  const broken = claimRows
+    .filter((r) => r[CLAIM]?.trim() && r[EVIDENCE]?.trim())
+    .flatMap((r) => brokenReferences(r[EVIDENCE], b4.filter((x) => x.some((c) => c?.trim())).length).map((ref) => `“${r[CLAIM]}” cites ${ref}`));
+  if (broken.length) {
+    issues.push({
+      key: "e_claims",
+      kind: "evidence",
+      blocking: true,
+      message: `Broken evidence reference: ${broken.join("; ")}. Point it at a field that exists (e.g. “B4 Results row 3”).`,
+    });
+  }
+
+  // 6. Measured specs must name their conditions.
+  for (const f of fields) {
+    if (!f.measured || f.kind !== "text" || isNA(f, na)) continue;
+    const text = textOf(answers, f.key);
+    if (/\d/.test(stripNoise(text)) && !CONDITIONS.test(text)) {
+      issues.push({
+        key: f.key,
+        kind: "spec",
+        blocking: true,
+        message: "Spec without measurement conditions: say what these numbers were measured under (hardware, load, document type or test set).",
+      });
+    }
+  }
+
+  // 7. B3 text about thin areas belongs in B5 (review flag, not blocking).
+  const thin = thinSentences(textOf(answers, "b3_domains"));
+  if (thin.length && !isNA(fields.find((f) => f.key === "b3_domains") ?? ({ key: "b3_domains" } as Field), na)) {
+    issues.push({
+      key: "b3_domains",
+      kind: "placement",
+      blocking: false,
+      action: "move_to_b5",
+      text: thin.join(" "),
+      message: `Weakness text belongs in B5: ${quote(thin)}.`,
+    });
+  }
+
+  // 8. MT models: LLM-only content in Error modes (review flag, not blocking).
+  if (!modelTypes.includes("llm")) {
+    const llm = llmSentences(textOf(answers, "b5_error_modes"));
+    if (llm.length) {
+      issues.push({
+        key: "b5_error_modes",
+        kind: "llm",
+        blocking: false,
+        action: "remove_llm",
+        text: llm.join("\n"),
+        message: `LLM-only content in an MT model: ${quote(llm)}.`,
+      });
+    }
+  }
+
+  // 9. Scale mismatch: COMET/chrF on 0–1 in B4, integer deltas in C4 uplift (warning).
   const zeroOne = b4.filter((r) => /COMET|chrF/i.test(r[B4.metric] ?? "") && r[B4.scale] === "0–1").map((r) => r[B4.metric]);
   const uplift = textOf(answers, "c4_uplift");
   if (modelTypes.includes("customer_trained") && zeroOne.length && /[+±]\s?\d+(?![.,]\d)/.test(uplift) && !/points|×\s?100|x\s?100/i.test(uplift)) {
@@ -195,7 +299,7 @@ export function checkPack(input: CheckInput): Issue[] {
     });
   }
 
-  // 6. One sellable product per pack.
+  // 10. One sellable product per pack.
   if (modelTypes.includes("custom_mt") && modelTypes.includes("customer_trained") && !input.splitOverride?.reason?.trim()) {
     issues.push({
       key: PACK_KEY,
@@ -215,6 +319,10 @@ export const ISSUE_TITLE: Record<IssueKind, string> = {
   claim: "Unregistered public claims",
   visibility: "Visibility conflicts",
   expired: "Expired metrics",
-  scale: "Scale warnings",
+  evidence: "Broken evidence references",
+  spec: "Specs without measurement conditions",
   split: "Pack covers two products",
+  scale: "Scale warnings",
+  placement: "Text in the wrong field",
+  llm: "LLM-only content in an MT model",
 };

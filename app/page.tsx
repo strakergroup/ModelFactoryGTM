@@ -34,7 +34,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                   <span className="pack-kind">{p.kind === "factory" ? "Shared · Part A" : "Model"}</span>
                   <StatusPill status={p.status} />
                 </div>
-                {p.needsReview && <span className="pill s-changes_requested needs-review">Needs review</span>}
+                {(p.reviewFields?.length ?? 0) > 0 ? (
+                  <span className="pill s-changes_requested needs-review">{p.reviewFields!.length} field{p.reviewFields!.length === 1 ? "" : "s"} need review</span>
+                ) : p.needsReview ? (
+                  <span className="pill s-changes_requested needs-review">Needs review</span>
+                ) : null}
                 <div className="pack-name">{p.name}</div>
                 {p.kind === "model" && (
                   <div className="muted small">

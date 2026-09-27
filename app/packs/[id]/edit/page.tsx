@@ -78,6 +78,8 @@ export default async function EditPage({
               initialNa={pack.na ?? {}}
               splitOverride={pack.splitOverride ?? null}
               factoryRequestProcess={requestProcess}
+              initialReviewFields={pack.reviewFields ?? []}
+              initialReviewCells={pack.reviewCells ?? []}
               version={pack.version}
             />
             {pack.kind === "model" && pack.version === 0 && (

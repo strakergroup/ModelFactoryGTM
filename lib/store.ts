@@ -1,6 +1,6 @@
 import { BlobPreconditionFailedError, del, get, list, put } from "@vercel/blob";
 import { SCHEMA_VERSION, type Answers, type NA } from "./fields";
-import { migrateAnswers, needsMigration, renameRevs } from "./migrate";
+import { backfillPairs, migrateAnswers, renameRevs, repointEvidence, reviewTargets } from "./migrate";
 
 // Each pack is one private JSON file in Vercel Blob: packs/<id>.json.
 // Writes use the file's ETag (ifMatch), so two people saving at once can't
@@ -38,6 +38,9 @@ export type Pack = {
   schemaVersion?: number; // missing = v1
   needsReview?: boolean; // set by a migration that moved answered content
   migrationNotes?: string[];
+  migratedAt?: string; // sign-offs older than this are stale
+  reviewFields?: string[]; // fields that got merged/moved content, until an editor saves them
+  reviewCells?: string[]; // "b4_metrics:<row>:<col>" cells filled by backfill, until edited
   version: number; // latest published version, 0 = never published
   versions: Version[];
   comments: Comment[];
@@ -71,7 +74,7 @@ export async function getPack(id: string): Promise<{ pack: Pack; etag: string } 
   }
   const pack = (await new Response(res.stream).json()) as Pack;
   const etag = strongEtag(res.blob.etag);
-  if (needsMigration(pack.schemaVersion)) return migrate(pack, etag);
+  if ((pack.schemaVersion ?? 1) < SCHEMA_VERSION) return migrate(pack, etag);
   return { pack, etag };
 }
 
@@ -79,21 +82,46 @@ export async function getPack(id: string): Promise<{ pack: Pack; etag: string } 
 // content moved, the pack goes back to Draft and is flagged "needs review";
 // published revisions and their sign-offs stay in the history.
 async function migrate(pack: Pack, etag: string): Promise<{ pack: Pack; etag: string }> {
-  const m = migrateAnswers(pack.answers ?? {});
-  pack.answers = m.answers;
-  pack.versions = (pack.versions ?? []).map((v) => ({ ...v, answers: migrateAnswers(v.answers).answers }));
-  pack.activity = (pack.activity ?? []).map((a) => ({ ...a, action: renameRevs(a.action) }));
-  pack.schemaVersion = SCHEMA_VERSION;
-  if (m.changed) {
-    pack.needsReview = true;
-    pack.migrationNotes = m.notes;
-    if (pack.status !== "draft") pack.status = "draft";
-    pack.activity.push({
-      at: new Date().toISOString(),
-      by: "System",
-      action: "moved to the new fact pack structure (schema v2); back to Draft for review",
-    });
+  const at = new Date().toISOString();
+  // v1 -> v2: merge, rename and remove fields.
+  if ((pack.schemaVersion ?? 1) < 2) {
+    const m = migrateAnswers(pack.answers ?? {});
+    pack.answers = m.answers;
+    pack.versions = (pack.versions ?? []).map((v) => ({ ...v, answers: migrateAnswers(v.answers).answers }));
+    pack.activity = (pack.activity ?? []).map((a) => ({ ...a, action: renameRevs(a.action) }));
+    if (m.changed) {
+      pack.needsReview = true;
+      pack.migrationNotes = m.notes;
+      pack.migratedAt = at;
+      if (pack.status !== "draft") pack.status = "draft";
+      pack.activity.push({ at, by: "System", action: "moved to the new fact pack structure (schema v2); back to Draft for review" });
+    }
   }
+  // v2 -> v3: repoint evidence, per-field review flags, B4 language-pair backfill.
+  if ((pack.schemaVersion ?? 1) < 3) {
+    const migrated = pack.needsReview || pack.activity.some((a) => a.action.startsWith("moved to the new fact pack structure"));
+    if (migrated) {
+      pack.migratedAt ??= pack.activity.find((a) => a.action.startsWith("moved to the new fact pack structure"))?.at ?? at;
+      pack.reviewFields = reviewTargets(pack.answers);
+    }
+    const e = repointEvidence(pack.answers);
+    pack.answers = e.answers;
+    pack.versions = (pack.versions ?? []).map((v) => ({ ...v, answers: repointEvidence(v.answers).answers }));
+    const b = backfillPairs(pack.answers);
+    pack.answers = b.answers;
+    if (b.cells.length) {
+      pack.reviewCells = b.cells;
+      if (!pack.reviewFields?.includes("b4_metrics")) pack.reviewFields = [...(pack.reviewFields ?? []), "b4_metrics"];
+    }
+    const changes = [
+      ...e.repoints.map((r) => `Evidence repointed: “${r.from}” → “${r.to}”`),
+      ...(b.cells.length ? [`B4 Language pair filled from C1 in ${b.cells.length} row(s); check them`] : []),
+    ];
+    if (changes.length || pack.reviewFields?.length) {
+      pack.activity.push({ at, by: "System", action: "applied schema v3 checks", detail: changes.join(" | ") || undefined });
+    }
+  }
+  pack.schemaVersion = SCHEMA_VERSION;
   try {
     return { pack, etag: await savePack(pack, etag) };
   } catch {

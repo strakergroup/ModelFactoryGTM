@@ -133,3 +133,113 @@ export const needsMigration = (schemaVersion?: number) => (schemaVersion ?? 1) <
 
 // Pack revisions (v1, v2) are now Rev 1, Rev 2 in the stored activity log.
 export const renameRevs = (s: string) => s.replace(/\bv(\d+)\b/g, "Rev $1");
+
+// ---------------------------------------------------------------------------
+// Schema v3: evidence repointing, per-field review flags, B4 pair backfill.
+// ---------------------------------------------------------------------------
+
+const B4_METRIC = 0;
+const B4_SCOPE = 1;
+const CLAIM_EVIDENCE = 2;
+const CLAIM_SOURCE = 6;
+
+// Old field names that evidence may cite -> the reference that replaced them.
+// "row" means: point at the B4 Results row that holds those numbers.
+export const EVIDENCE_REPOINTS: { from: RegExp; to: string | { b4RowMatching: RegExp }; key: string }[] = [
+  { from: /\bC1\s+Post-edit effort\b/gi, to: { b4RowMatching: /minute|post-?edit/i }, key: "b4_metrics" },
+  { from: /\bC1\s+Quality by pair\b/gi, to: { b4RowMatching: /COMET|chrF|BLEU/i }, key: "b4_metrics" },
+  { from: /\bD3\s+Request process\b/gi, to: "A9 Request process", key: "a9_request_process" },
+  { from: /\bB2\s+Required oversight\b/gi, to: "B2 Oversight and assurance", key: "b2_oversight_assurance" },
+  { from: /\bB7\s+Assurance levels\b/gi, to: "B2 Oversight and assurance", key: "b2_oversight_assurance" },
+  { from: /\bB7\s+Where it appears\b/gi, to: "B7 How arbitr uses it", key: "b7_how_used" },
+  { from: /\bB7\s+Routing\b(?!\s+logic)/gi, to: "B7 Routing logic", key: "b7_routing_note" },
+  { from: /\bB5\s+(?:Typical errors|Safety risks)\b/gi, to: "B5 Error modes", key: "b5_error_modes" },
+  { from: /\bD1\s+(?:How it's sold|Pricing basis|Credit mapping)\b/gi, to: "D1 Packaging & pricing", key: "d1_packaging" },
+  { from: /\bD3\s+(?:What customers get|Ongoing reporting)\b/gi, to: "D3 Deliverables and reporting", key: "d3_deliverables" },
+  { from: /\bC4\s+Onboarding steps\b/gi, to: "D3 Customer-trained build", key: "d3_onboarding_ctm" },
+  { from: /\bB3\s+Domains and languages\b(?!\s+covered)/gi, to: "B3 Domains and languages covered", key: "b3_domains" },
+  { from: /\bB5\s+Known weaknesses\b(?!\s+and gaps)/gi, to: "B5 Known weaknesses and gaps", key: "b5_weaknesses" },
+];
+
+export type Repoint = { claim: string; from: string; to: string };
+
+// Rewrites old field names in claims Evidence, and fills an empty Source field.
+export function repointEvidence(answers: Answers): { answers: Answers; repoints: Repoint[] } {
+  const claims = Array.isArray(answers.e_claims) ? (answers.e_claims as string[][]) : [];
+  const b4 = Array.isArray(answers.b4_metrics) ? (answers.b4_metrics as string[][]) : [];
+  const repoints: Repoint[] = [];
+  const next = claims.map((row) => {
+    let evidence = row[CLAIM_EVIDENCE] ?? "";
+    let source = row[CLAIM_SOURCE] ?? "";
+    for (const r of EVIDENCE_REPOINTS) {
+      evidence = evidence.replace(r.from, (match) => {
+        let to: string;
+        if (typeof r.to === "string") to = r.to;
+        else {
+          const pattern = r.to.b4RowMatching;
+          const i = b4.findIndex((x) => pattern.test(x[B4_METRIC] ?? ""));
+          to = i >= 0 ? `B4 Results row ${i + 1}` : "B4 Results";
+        }
+        repoints.push({ claim: row[0] ?? "", from: match, to });
+        if (!source) source = r.key;
+        return to;
+      });
+    }
+    // "B4 row 3" -> "B4 Results row 3", then drop repeated references ("X + X: detail" -> "X: detail").
+    evidence = evidence.replace(/\bB4\s+row\s+(\d+)/gi, "B4 Results row $1");
+    const parts = evidence.split(/\s*\+\s*(?=[A-E]\d)/);
+    const ref = (p: string) => p.split(":")[0].trim().toLowerCase();
+    evidence = parts
+      .filter((p, i) => !parts.some((q, j) => j !== i && ref(q) === ref(p) && (q.length > p.length || (q.length === p.length && j < i))))
+      .join(" + ");
+    const out = [...row];
+    while (out.length <= CLAIM_SOURCE) out.push("");
+    out[CLAIM_EVIDENCE] = evidence;
+    out[CLAIM_SOURCE] = source;
+    return out;
+  });
+  return { answers: claims.length ? { ...answers, e_claims: next } : answers, repoints };
+}
+
+// Fields that received merged or moved content in the v1 -> v2 migration.
+export function reviewTargets(answers: Answers): string[] {
+  const filled = (k: string) =>
+    typeof answers[k] === "string" ? (answers[k] as string).trim().length > 0 : Array.isArray(answers[k]) && (answers[k] as string[][]).some((r) => r.some((c) => c?.trim()));
+  const keys = new Set<string>();
+  for (const m of MERGES) {
+    const movedIn = m.from.some((f) => f.key !== m.to);
+    const merged = typeof answers[m.to] === "string" && /^From [^:\n]+:/m.test(answers[m.to] as string);
+    if (filled(m.to) && (movedIn || merged)) keys.add(m.to);
+  }
+  for (const r of REWORDED) if (filled(r.key)) keys.add(r.key);
+  if (filled("b4_metrics")) keys.add("b4_metrics");
+  return [...keys];
+}
+
+// "EN→DE (Beta, GA 3 Nov), EN→FR (Research)" -> ["EN→DE"]
+export function gaOrBetaPairs(c1Pairs: string): string[] {
+  const out: string[] = [];
+  for (const m of c1Pairs.matchAll(/([A-Za-z]{2,3}(?:-[A-Za-z]{2})?\s*(?:→|->|>)\s*[A-Za-z]{2,3}(?:-[A-Za-z]{2})?)\s*\(([^)]*)\)/g)) {
+    if (/\b(GA|Beta)\b/i.test(m[2])) out.push(m[1].replace(/\s*(?:->|>)\s*/, "→").replace(/\s+/g, ""));
+  }
+  return [...new Set(out)];
+}
+
+// Fills empty B4 "Language pair / Scope" cells when C1 has exactly one GA/Beta pair.
+export function backfillPairs(answers: Answers): { answers: Answers; cells: string[] } {
+  const pairs = gaOrBetaPairs(typeof answers.c1_pairs === "string" ? answers.c1_pairs : "");
+  const b4 = Array.isArray(answers.b4_metrics) ? (answers.b4_metrics as string[][]) : [];
+  if (pairs.length !== 1 || !b4.length) return { answers, cells: [] };
+  const cells: string[] = [];
+  const next = b4.map((row, r) => {
+    if (!row[B4_METRIC]?.trim() || row[B4_SCOPE]?.trim()) return row;
+    cells.push(`b4_metrics:${r}:${B4_SCOPE}`);
+    const out = [...row];
+    out[B4_SCOPE] = pairs[0];
+    return out;
+  });
+  return { answers: { ...answers, b4_metrics: next }, cells };
+}
+
+// Removes the "From <old field>:" labels a merge added.
+export const stripFromLabels = (s: string) => s.replace(/^From [^:\n]+:\s*/gm, "").replace(/\n{3,}/g, "\n\n").trim();
