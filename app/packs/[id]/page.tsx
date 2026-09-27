@@ -85,7 +85,7 @@ export default async function PackPage({
             Sign-offs are recorded, but the model team must fix these and publish a new Rev.
             <ul>
               {(Object.keys(ISSUE_TITLE) as Issue["kind"][]).map((k) => {
-                const list = issues.filter((i) => i.kind === k);
+                const list = issues.filter((i) => i.kind === k && i.blocking);
                 if (!list.length) return null;
                 return (
                   <li key={k}>
@@ -101,6 +101,7 @@ export default async function PackPage({
         ) : (
           <p className="ok-box">Rev {v} has no blocking issues. It becomes Launch-ready when all four roles sign off.</p>
         ))}
+        {v > 0 && <ReviewList issues={issues} href={(k) => `#f-${k}`} />}
         {issuesFor(PACK_KEY).map((i, n) => (
           <div key={n} id={`f-${PACK_KEY}`} className="flag flag-block">{i.message}</div>
         ))}
@@ -271,6 +272,30 @@ function Thread({ packId, field, comments }: { packId: string; field: string; co
         <textarea name="body" rows={2} placeholder="Add a comment" required />
         <button type="submit" className="secondary">Comment</button>
       </form>
+    </div>
+  );
+}
+
+function ReviewList({ issues, href }: { issues: Issue[]; href: (key: string) => string }) {
+  const warn = issues.filter((i) => !i.blocking);
+  if (!warn.length) return null;
+  const kinds = [...new Set(warn.map((i) => i.kind))];
+  return (
+    <div className="warn-box">
+      <strong>Also review</strong> (these don&apos;t block Launch-ready):
+      <ul>
+        {kinds.map((k) => (
+          <li key={k}>
+            <strong>{ISSUE_TITLE[k]}:</strong>{" "}
+            {[...new Set(warn.filter((i) => i.kind === k).map((i) => i.key))].map((key, n) => (
+              <span key={key}>
+                {n > 0 && ", "}
+                <a href={href(key)}>{fieldLabel(key)}</a>
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

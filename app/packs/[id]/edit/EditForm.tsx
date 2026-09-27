@@ -196,7 +196,7 @@ export default function EditForm(props: Props) {
           can&apos;t become Launch-ready until they&apos;re fixed.
           <ul>
             {(Object.keys(ISSUE_TITLE) as Issue["kind"][]).map((k) => {
-              const list = issues.filter((i) => i.kind === k);
+              const list = issues.filter((i) => i.kind === k && i.blocking);
               if (!list.length) return null;
               return (
                 <li key={k}>
@@ -215,6 +215,7 @@ export default function EditForm(props: Props) {
       ) : (
         <p className="ok-box">No blocking issues. Once published and signed off by all four roles, this pack becomes Launch-ready.</p>
       )}
+      <ReviewList issues={issues} href={(k) => `#ed-${k}`} />
 
       <p className="muted small legend">
         {(["P", "N", "I"] as const).map((t) => (
@@ -464,6 +465,30 @@ function TableEditor({
           + Add row
         </button>
       )}
+    </div>
+  );
+}
+
+function ReviewList({ issues, href }: { issues: Issue[]; href: (key: string) => string }) {
+  const warn = issues.filter((i) => !i.blocking);
+  if (!warn.length) return null;
+  const kinds = [...new Set(warn.map((i) => i.kind))];
+  return (
+    <div className="warn-box">
+      <strong>Also review</strong> (these don&apos;t block Launch-ready):
+      <ul>
+        {kinds.map((k) => (
+          <li key={k}>
+            <strong>{ISSUE_TITLE[k]}:</strong>{" "}
+            {[...new Set(warn.filter((i) => i.kind === k).map((i) => i.key))].map((key, n) => (
+              <span key={key}>
+                {n > 0 && ", "}
+                <a href={href(key)}>{fieldLabel(key)}</a>
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
