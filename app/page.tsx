@@ -93,7 +93,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
           <input id="name" name="name" placeholder={`e.g. ${NAMING_EXAMPLE}`} required />
           <p className="help">
             Naming convention: {NAMING_PARTS.map((p) => p.part).join(" - ")}.{" "}
-            {NAMING_PARTS.map((p) => `${p.example} (${p.rule.toLowerCase()})`).join(" · ")}
+            {NAMING_PARTS.map((p) => `${p.example}: ${p.rule}`).join(" · ")}
           </p>
           <fieldset>
             <legend>Model type (pick all that apply)</legend>
