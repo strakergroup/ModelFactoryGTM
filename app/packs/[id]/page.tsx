@@ -137,7 +137,10 @@ export default async function PackPage({
             </ul>
           </div>
         ) : (
-          <p className="ok-box">{scope}: no blocking issues. It becomes Launch-ready when every role signs off.</p>
+          <p className="ok-box">
+            {scope}: no blocking issues.{" "}
+            {pack.status === "launch_ready" ? "All sign-offs are in: this pack is Launch-ready." : "It becomes Launch-ready when every role signs off."}
+          </p>
         ))}
         {v > 0 && <ReviewList issues={issues} href={(k) => `#f-${k}`} scope={scope} />}
         {issuesFor(PACK_KEY).map((i, n) => (

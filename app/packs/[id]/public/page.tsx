@@ -37,7 +37,7 @@ export default async function PublicView({ params }: { params: Promise<{ id: str
                 one-pager or Sage.
               </p>
             )}
-            <CardActions markdown={data.markdown} pdfHref={`/packs/${id}/card`} ready={data.ready} />
+            <CardActions markdown={data.markdown} pdfHref={`/packs/${id}/card?print=1`} ready={data.ready} />
             <CardView sections={data.sections} />
           </>
         )}

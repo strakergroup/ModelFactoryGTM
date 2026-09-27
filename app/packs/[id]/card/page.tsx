@@ -6,8 +6,15 @@ import CardView from "../../../CardView";
 import PrintOnLoad from "../../../PrintOnLoad";
 
 // Print-ready model card; the browser's "Save as PDF" makes the PDF. Launch-ready packs only.
-export default async function CardPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function CardPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ print?: string }>;
+}) {
   const { id } = await params;
+  const { print } = await searchParams;
   await requireName();
   const found = await getPack(id);
   if (!found) notFound();
@@ -21,7 +28,7 @@ export default async function CardPage({ params }: { params: Promise<{ id: strin
   }
   return (
     <main className="page card-page">
-      <PrintOnLoad />
+      <PrintOnLoad auto={print === "1"} />
       <h1>{data.title}</h1>
       <p className="muted">{data.subtitle}</p>
       <CardView sections={data.sections} />
