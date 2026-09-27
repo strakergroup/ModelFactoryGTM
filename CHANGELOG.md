@@ -1,5 +1,14 @@
 # Changelog
 
+## Polish — 27 Sep 2026 (schema v4)
+
+| # | Change | Behaviour |
+| :- | :- | :- |
+| 1 | **Source field labels** | The claims register's Source field shows the field's label and row ("B4 Results row 3", "B4 Headline result"), never an internal key. It's display-only and links to the field. Stored as key + row. |
+| 2 | **System changes banner** | When the system edits a draft (migrations, backfills, repointed evidence), the published view shows "The draft has N system changes. View draft." with a list of what changed; one entry per field. The list clears when a new Rev is published. |
+| 3 | **Keep as one pack** | The two-products warning's override needs a reason of at least 20 characters (live counter; the button stays disabled until then). It clears the blocker and records the reason in Activity and on the pack header. |
+| 4 | **Claim model mismatch** | A claim whose "Model or factory" names a version (e.g. "engine v2") that isn't B1's version (e.g. "v2.1") is flagged and blocks Launch-ready. Claims marked factory-wide, or naming no version, are skipped. "Create claim from this field" now prefills "Model or factory" from B1. |
+
 ## Schema v3 — 27 Sep 2026 (follow-up fixes to the v2 migration)
 
 Runs once per pack when it's next opened, after the v1 → v2 step.

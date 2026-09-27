@@ -33,6 +33,9 @@ export default async function EditPage({
       <main className="page">
         <p className="crumb"><Link href={`/packs/${id}`}>← Back to review view</Link></p>
         <h1>{pack.name} <StatusPill status={pack.status} /></h1>
+        {pack.splitOverride && (
+          <p className="muted small">Kept as one pack by {pack.splitOverride.by}: “{pack.splitOverride.reason}”</p>
+        )}
         <ErrorNote error={error} />
 
         {!editable ? (

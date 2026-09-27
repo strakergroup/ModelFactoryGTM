@@ -1,10 +1,10 @@
-import { FACTORY_PARTS, MODEL_PARTS, fieldsFor, isDone, isNA, sectionOf, type Answers, type Field, type NA } from "./fields";
+import { FACTORY_PARTS, MODEL_PARTS, SPLIT_REASON_MIN, fieldsFor, isDone, isNA, sectionOf, type Answers, type Field, type NA } from "./fields";
 
 // The launch-ready checks. Pure functions: the editor runs them live in the
 // browser, the review page shows them, and sign-off uses them to decide
 // whether a pack can become Launch-ready.
 
-export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "spec" | "split" | "scale" | "placement" | "llm";
+export type IssueKind = "required" | "claim" | "visibility" | "expired" | "evidence" | "model" | "spec" | "split" | "scale" | "placement" | "llm";
 export type IssueAction = "create_claim" | "move_to_b5" | "remove_llm";
 export type Issue = { key: string; kind: IssueKind; message: string; blocking: boolean; text?: string; action?: IssueAction };
 
@@ -21,6 +21,7 @@ export const PACK_KEY = "_pack"; // issues about the pack as a whole
 
 // Claims register columns (Part E).
 const CLAIM = 0;
+const MODEL = 1;
 const EVIDENCE = 2;
 const APPROVED_BY = 4;
 // B4 Results columns.
@@ -144,6 +145,9 @@ export function brokenReferences(evidence: string, b4Rows: number): string[] {
   return broken;
 }
 
+// Model versions like v2, v2.1, V3.0.1 (lower-cased).
+export const versionsIn = (s: string) => [...new Set([...s.matchAll(/\bv(\d+(?:\.\d+)*)\b/gi)].map((m) => `v${m[1]}`))];
+
 // A sign-off stops counting if it predates a schema migration, or if the Rev it approved now has blocking issues.
 export function isStale(signedAt: string, migratedAt: string | undefined, revHasBlocking: boolean): boolean {
   return revHasBlocking || Boolean(migratedAt && signedAt < migratedAt);
@@ -245,6 +249,25 @@ export function checkPack(input: CheckInput): Issue[] {
     });
   }
 
+  // 5b. A claim's "Model or factory" must name the same model version as B1.
+  const b1Versions = versionsIn(textOf(answers, "b1_name_version"));
+  const mismatched = claimRows.filter((r) => {
+    const model = r[MODEL] ?? "";
+    if (!r[CLAIM]?.trim() || /\bfactory\b/i.test(model)) return false;
+    const v = versionsIn(model);
+    return v.length > 0 && b1Versions.length > 0 && !v.every((x) => b1Versions.includes(x));
+  });
+  if (mismatched.length) {
+    issues.push({
+      key: "e_claims",
+      kind: "model",
+      blocking: true,
+      message: `Model mismatch: ${mismatched
+        .map((r) => `“${r[CLAIM]}” is for “${r[MODEL]}” (${versionsIn(r[MODEL]).join(", ")})`)
+        .join("; ")}, but B1 says ${b1Versions.join(", ")}. Fix “Model or factory”, or mark the claim as factory-wide.`,
+    });
+  }
+
   // 6. Measured specs must name their conditions.
   for (const f of fields) {
     if (!f.measured || f.kind !== "text" || isNA(f, na)) continue;
@@ -300,12 +323,12 @@ export function checkPack(input: CheckInput): Issue[] {
   }
 
   // 10. One sellable product per pack.
-  if (modelTypes.includes("custom_mt") && modelTypes.includes("customer_trained") && !input.splitOverride?.reason?.trim()) {
+  if (modelTypes.includes("custom_mt") && modelTypes.includes("customer_trained") && (input.splitOverride?.reason?.trim().length ?? 0) < SPLIT_REASON_MIN) {
     issues.push({
       key: PACK_KEY,
       kind: "split",
       blocking: true,
-      message: "This pack covers a shared model and a customer-trained build. Split it unless both are sold under one SKU.",
+      message: `This pack covers a shared model and a customer-trained build. Split it unless both are sold under one SKU (then keep it as one pack with a reason of at least ${SPLIT_REASON_MIN} characters).`,
     });
   }
 
@@ -320,6 +343,7 @@ export const ISSUE_TITLE: Record<IssueKind, string> = {
   visibility: "Visibility conflicts",
   expired: "Expired metrics",
   evidence: "Broken evidence references",
+  model: "Claims for a different model version",
   spec: "Specs without measurement conditions",
   split: "Pack covers two products",
   scale: "Scale warnings",

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { isAnswered, partsFor, type Answers } from "../../../../lib/fields";
+import { isAnswered, partsFor, sourceLabel, type Answers } from "../../../../lib/fields";
 import { requireName } from "../../../../lib/session";
 import { getPack } from "../../../../lib/store";
 import Header, { StatusPill } from "../../../Header";
@@ -55,7 +55,7 @@ export default async function PublicView({ params }: { params: Promise<{ id: str
                               <tbody>
                                 {(answers[f.key] as string[][])
                                   .filter((r) => r.slice(f.presetRows ? 1 : 0).some((c) => c.trim()))
-                                  .map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c || "—"}</td>)}</tr>)}
+                                  .map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{(f.columns[j]?.name === "Source field" && c ? sourceLabel(c) : c) || "—"}</td>)}</tr>)}
                               </tbody>
                             </table>
                           </div>

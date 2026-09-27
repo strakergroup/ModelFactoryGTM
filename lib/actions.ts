@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import type { Answers, NA } from "./fields";
+import { SPLIT_REASON_MIN, type Answers, type NA } from "./fields";
 import { blocking, checkPack, isStale } from "./checks";
 import { MODEL_TYPES, SIGNOFF_ROLES } from "./fields";
 import { requireName } from "./session";
@@ -112,6 +112,8 @@ export async function publishPack(formData: FormData) {
     });
     p.version = version;
     p.status = "in_review";
+    // Publishing turns the system's draft edits into a reviewed Rev.
+    p.systemChanges = [];
     // Publishing is the review of the migrated content; the notes stay in the activity log.
     if (p.needsReview) {
       p.activity.push({ at: now(), by, action: "reviewed the move to the new structure", detail: p.migrationNotes?.join(" | ") || undefined });
@@ -236,7 +238,9 @@ export async function saveSplitOverride(formData: FormData) {
   const id = String(formData.get("id"));
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
   const by = await requireName();
-  if (reason.length < 10) redirect(`/packs/${id}/edit?error=${encodeURIComponent("Give a reason of at least 10 characters for keeping both in one pack.")}`);
+  if (reason.length < SPLIT_REASON_MIN) {
+    redirect(`/packs/${id}/edit?error=${encodeURIComponent(`Give a reason of at least ${SPLIT_REASON_MIN} characters for keeping both in one pack.`)}`);
+  }
   const rev = await update(id, (p) => {
     if (p.status !== "draft" && p.status !== "changes_requested") return "Reopen the pack for editing first.";
     p.splitOverride = { reason, by, at: now() };

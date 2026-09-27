@@ -2,7 +2,7 @@
 // Schema v2 (27 Sep 2026): merged duplicates, Required/Optional per field,
 // type-dependent help. See CHANGELOG.md. To add a field, add one line here.
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export type Tag = "P" | "N" | "I";
 export const TAG_LABEL: Record<Tag, string> = { P: "Public", N: "Under NDA", I: "Internal" };
@@ -593,3 +593,16 @@ export function sectionOf(key: string): string {
   for (const part of [...FACTORY_PARTS, ...MODEL_PARTS]) for (const s of part.sections) if (s.fields.some((f) => f.key === key)) return s.id;
   return "";
 }
+
+// Claims "Source field" values are stored as a key, optionally with a B4 row:
+// "b4_metrics#3" -> "B4 Results row 3"; "b4_headline" -> "B4 Headline result".
+export function sourceLabel(value: string): string {
+  const [key, row] = value.split("#");
+  const f = findField(key);
+  if (!f) return value;
+  return `${sectionOf(key)} ${f.label}${row ? ` row ${row}` : ""}`;
+}
+export const sourceKey = (value: string) => value.split("#")[0];
+
+// Minimum length for the reason to keep two products in one pack.
+export const SPLIT_REASON_MIN = 20;

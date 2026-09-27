@@ -1,6 +1,6 @@
 import { BlobPreconditionFailedError, del, get, list, put } from "@vercel/blob";
-import { SCHEMA_VERSION, type Answers, type NA } from "./fields";
-import { backfillPairs, migrateAnswers, renameRevs, repointEvidence, reviewTargets } from "./migrate";
+import { fieldLabel, SCHEMA_VERSION, sectionOf, type Answers, type NA } from "./fields";
+import { backfillPairs, migrateAnswers, REMOVED, renameRevs, repointEvidence, reviewTargets, sourceWithRow } from "./migrate";
 
 // Each pack is one private JSON file in Vercel Blob: packs/<id>.json.
 // Writes use the file's ETag (ifMatch), so two people saving at once can't
@@ -41,6 +41,8 @@ export type Pack = {
   migratedAt?: string; // sign-offs older than this are stale
   reviewFields?: string[]; // fields that got merged/moved content, until an editor saves them
   reviewCells?: string[]; // "b4_metrics:<row>:<col>" cells filled by backfill, until edited
+  // Edits the system made to the draft since the last publish (one per field).
+  systemChanges?: { at: string; what: string }[];
   version: number; // latest published version, 0 = never published
   versions: Version[];
   comments: Comment[];
@@ -120,6 +122,14 @@ async function migrate(pack: Pack, etag: string): Promise<{ pack: Pack; etag: st
     if (changes.length || pack.reviewFields?.length) {
       pack.activity.push({ at, by: "System", action: "applied schema v3 checks", detail: changes.join(" | ") || undefined });
     }
+  }
+  // v3 -> v4: Source field keeps its B4 row; record the system's edits to the draft.
+  if ((pack.schemaVersion ?? 1) < 4) {
+    if (Array.isArray(pack.answers.e_claims)) pack.answers.e_claims = sourceWithRow(pack.answers.e_claims as string[][]);
+    pack.versions = pack.versions.map((v) =>
+      Array.isArray(v.answers.e_claims) ? { ...v, answers: { ...v.answers, e_claims: sourceWithRow(v.answers.e_claims as string[][]) } } : v,
+    );
+    if (!pack.systemChanges && pack.migratedAt) pack.systemChanges = seedSystemChanges(pack);
   }
   pack.schemaVersion = SCHEMA_VERSION;
   try {
@@ -213,4 +223,24 @@ export async function getPackAtLeast(id: string, rev?: number) {
     if (!found || !rev || (found.pack.rev ?? 0) >= rev) return found;
   }
   return found;
+}
+
+const label = (key: string) => `${sectionOf(key)} ${fieldLabel(key)}`.trim();
+
+// One entry per field the migrations changed, rebuilt from what they left on the pack.
+function seedSystemChanges(pack: Pack): { at: string; what: string }[] {
+  const at = pack.migratedAt ?? new Date().toISOString();
+  const out: { at: string; what: string }[] = [];
+  for (const key of pack.reviewFields ?? []) {
+    out.push({ at, what: key === "b4_metrics" ? "B4 Results: new columns added (Language pair / Scope, Scale, Re-validate by)" : `${label(key)}: merged or moved content` });
+  }
+  for (const r of REMOVED) {
+    if ((pack.migrationNotes ?? []).some((n) => n.startsWith(r.label))) out.push({ at, what: `${r.label}: removed, text kept as a migration note` });
+  }
+  const v3 = pack.activity.find((a) => a.action === "applied schema v3 checks");
+  for (const part of (v3?.detail ?? "").split(" | ").filter(Boolean)) {
+    if (part.startsWith("Evidence repointed")) out.push({ at: v3!.at, what: `E Claims register: ${part.charAt(0).toLowerCase()}${part.slice(1)}` });
+    if (part.startsWith("B4 Language pair filled")) out.push({ at: v3!.at, what: part });
+  }
+  return out;
 }

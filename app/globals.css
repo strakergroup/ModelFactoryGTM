@@ -320,3 +320,4 @@ td.review-cell input { border-color: #e8a33d; background: #fff8ec; }
   .flag-review { background: #2a2012; color: #ffc27a; border-color: #5c4420; }
   td.review-cell input { background: #2a2012; }
 }
+.source-link { font-size: 13px; white-space: nowrap; }

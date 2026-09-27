@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import sample from "./sample-v1.json";
 import { backfillPairs, gaOrBetaPairs, migrateAnswers, repointEvidence, reviewTargets, stripFromLabels } from "../lib/migrate";
-import { brokenReferences, checkPack, isStale, type CheckInput } from "../lib/checks";
+import { brokenReferences, checkPack, isStale, versionsIn, type CheckInput } from "../lib/checks";
+import { sourceLabel } from "../lib/fields";
 
 const types = ["custom_mt", "customer_trained"];
 const base = backfillPairs(repointEvidence(migrateAnswers(sample as never).answers).answers).answers;
@@ -26,8 +27,8 @@ test("sample flags exactly the expected issues", () => {
   assert.deepEqual(kinds(i, "b6_latency"), ["spec"]);
   assert.deepEqual(kinds(i, "b3_domains"), ["placement"]);
   assert.deepEqual(kinds(i, "b5_error_modes"), ["llm"]);
-  assert.deepEqual(kinds(i, "e_claims"), []);
-  assert.equal(i.length, 13);
+  assert.deepEqual(kinds(i, "e_claims"), ["model"]);
+  assert.equal(i.length, 14);
 });
 
 test("an approved claim clears the headline's claim and visibility flags", () => {
@@ -76,7 +77,8 @@ test("migration drops nothing: every old answer's text survives somewhere", () =
 test("evidence citing a removed field is repointed to its replacement", () => {
   const claims = base.e_claims as string[][];
   assert.equal(claims[0][2], "B4 Results row 3: pilot, 3 legal linguists, 40k words, 19 Sep 2026");
-  assert.equal(claims[0][6], "b4_metrics");
+  assert.equal(claims[0][6], "b4_metrics#3");
+  assert.equal(sourceLabel(claims[0][6]), "B4 Results row 3");
 });
 
 test("unknown fields and missing B4 rows are broken references", () => {
@@ -117,6 +119,27 @@ test("claim rule: commercial terms and timelines are exempt, improvements are no
 
 test("measured specs with conditions pass", () => {
   assert.deepEqual(kinds(run({}, { ...base, b6_latency: "Median 0.9s, p95 2.4s per 1,000 words, measured on one L4 GPU at 37 concurrent requests" }), "b6_latency"), []);
+});
+
+test("Source field shows the display label, never the key", () => {
+  assert.equal(sourceLabel("b4_headline"), "B4 Headline result");
+  assert.equal(sourceLabel("b4_metrics"), "B4 Results");
+  assert.equal(sourceLabel("b4_metrics#2"), "B4 Results row 2");
+});
+
+test("a claim for a different model version blocks; matching or factory-wide claims pass", () => {
+  assert.deepEqual(versionsIn("Legal EN→DE engine v2"), ["v2"]);
+  assert.deepEqual(versionsIn("legal-en-de-v2.1 · external name"), ["v2.1"]);
+  const row = (model: string) => [["Claim text", model, "B4 Results row 3", "P", "Morgan", "", ""]];
+  assert.deepEqual(kinds(run({}, { ...base, e_claims: row("Legal EN→DE engine v2") }), "e_claims"), ["model"]);
+  assert.deepEqual(kinds(run({}, { ...base, e_claims: row("legal-en-de-v2.1") }), "e_claims"), []);
+  assert.deepEqual(kinds(run({}, { ...base, e_claims: row("Factory-wide") }), "e_claims"), []);
+  assert.deepEqual(kinds(run({}, { ...base, e_claims: row("Legal German engine") }), "e_claims"), []);
+});
+
+test("keeping two products in one pack needs a 20+ character reason", () => {
+  assert.deepEqual(kinds(run({ splitOverride: { reason: "One SKU" } }), "_pack"), ["split"]);
+  assert.deepEqual(kinds(run({ splitOverride: { reason: "Sold under one SKU with an optional build fee" } }), "_pack"), []);
 });
 
 console.log(`\n${passed} passed`);

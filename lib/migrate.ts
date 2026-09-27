@@ -174,14 +174,16 @@ export function repointEvidence(answers: Answers): { answers: Answers; repoints:
     for (const r of EVIDENCE_REPOINTS) {
       evidence = evidence.replace(r.from, (match) => {
         let to: string;
+        let key = r.key;
         if (typeof r.to === "string") to = r.to;
         else {
           const pattern = r.to.b4RowMatching;
           const i = b4.findIndex((x) => pattern.test(x[B4_METRIC] ?? ""));
           to = i >= 0 ? `B4 Results row ${i + 1}` : "B4 Results";
+          if (i >= 0) key = `${r.key}#${i + 1}`;
         }
         repoints.push({ claim: row[0] ?? "", from: match, to });
-        if (!source) source = r.key;
+        if (!source) source = key;
         return to;
       });
     }
@@ -243,3 +245,15 @@ export function backfillPairs(answers: Answers): { answers: Answers; cells: stri
 
 // Removes the "From <old field>:" labels a merge added.
 export const stripFromLabels = (s: string) => s.replace(/^From [^:\n]+:\s*/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+
+// v4: a Source field saved as a bare "b4_metrics" gets its row from the Evidence.
+export function sourceWithRow(claims: string[][]): string[][] {
+  return claims.map((row) => {
+    if (row[CLAIM_SOURCE] !== "b4_metrics") return row;
+    const m = (row[CLAIM_EVIDENCE] ?? "").match(/\bB4 Results row (\d+)/i);
+    if (!m) return row;
+    const out = [...row];
+    out[CLAIM_SOURCE] = `b4_metrics#${m[1]}`;
+    return out;
+  });
+}

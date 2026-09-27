@@ -6,7 +6,10 @@ import { blocking, checkPack, ISSUE_TITLE, llmSentences, PACK_KEY, thinSentences
 import {
   MODEL_TYPES,
   NA_MIN,
+  SPLIT_REASON_MIN,
   completion,
+  sourceKey,
+  sourceLabel,
   completionText,
   emptyTable,
   fieldLabel,
@@ -60,6 +63,7 @@ export default function EditForm(props: Props) {
   const [reviewCells, setReviewCells] = useState<string[]>(props.initialReviewCells);
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const events = useRef<{ action: string; detail?: string }[]>([]);
+  const [splitReason, setSplitReason] = useState("");
 
   useEffect(() => {
     if (first.current) {
@@ -156,7 +160,9 @@ export default function EditForm(props: Props) {
   const claimsField = partsFor("model", []).flatMap((p) => p.sections.flatMap((s) => s.fields)).find((f) => f.key === CLAIMS_KEY) as TableField;
   const createClaim = (f: Field, text: string) => {
     const rows = table(claimsField).filter((r) => r.some((c) => c.trim()));
-    setTable(CLAIMS_KEY, [...rows, [text.trim(), name, "", f.tag, "", "", f.key]]);
+    // "Model or factory" comes from B1 so the claim names the model version it's evidence for.
+    const b1 = String(answers.b1_name_version ?? "").split("·")[0].trim();
+    setTable(CLAIMS_KEY, [...rows, [text.trim(), b1 || name, "", f.tag, "", "", f.key]]);
     setTimeout(() => document.getElementById(`ed-${CLAIMS_KEY}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   };
 
@@ -273,10 +279,26 @@ export default function EditForm(props: Props) {
               ) : (
                 <form action={saveSplitOverride} className="inline-form">
                   <input type="hidden" name="id" value={id} />
-                  <input name="reason" placeholder="Why both belong in one pack (e.g. sold under one SKU)" minLength={10} required aria-label="Override reason" />
-                  <button type="submit" className="secondary" disabled={state !== "saved"} title={state !== "saved" ? "Wait for your changes to save" : ""}>
+                  <input
+                    name="reason"
+                    value={splitReason}
+                    onChange={(e) => setSplitReason(e.target.value)}
+                    placeholder={`Why both belong in one pack, e.g. “Sold under one SKU; the build is an optional line item”`}
+                    minLength={SPLIT_REASON_MIN}
+                    required
+                    aria-label="Reason to keep as one pack"
+                  />
+                  <button
+                    type="submit"
+                    className="secondary"
+                    disabled={state !== "saved" || splitReason.trim().length < SPLIT_REASON_MIN}
+                    title={state !== "saved" ? "Wait for your changes to save" : `Reason needs at least ${SPLIT_REASON_MIN} characters`}
+                  >
                     Keep as one pack
                   </button>
+                  <span className="muted small">
+                    {splitReason.trim().length}/{SPLIT_REASON_MIN} characters minimum
+                  </span>
                 </form>
               )}
             </div>
@@ -434,7 +456,13 @@ function TableEditor({
                   const flagged = flaggedCells.includes(`${field.key}:${r}:${c}`);
                   return (
                     <td key={c} className={flagged ? "review-cell" : ""} title={flagged ? "Filled automatically: check it" : undefined}>
-                      {col.type === "select" ? (
+                      {c === source ? (
+                        cell ? (
+                          <a className="source-link" href={`#ed-${sourceKey(cell)}`}>{sourceLabel(cell)} ↗</a>
+                        ) : (
+                          <span className="muted small">—</span>
+                        )
+                      ) : col.type === "select" ? (
                         <select aria-label={col.name} value={cell} onChange={(e) => set(r, c, e.target.value)}>
                           <option value="">—</option>
                           {col.options?.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -442,7 +470,6 @@ function TableEditor({
                       ) : (
                         <input type={col.type === "date" ? "date" : "text"} aria-label={col.name} value={cell} onChange={(e) => set(r, c, e.target.value)} />
                       )}
-                      {c === source && cell && <a className="small" href={`#ed-${cell}`}>{fieldLabel(cell)} ↗</a>}
                       {c === revalidate && expired && <span className="flag-inline">Past re-validate date</span>}
                       {flagged && <span className="review-inline">Check: filled from C1</span>}
                     </td>

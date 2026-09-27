@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { addComment, requestChanges, resolveComment, signOff } from "../../../lib/actions";
-import { completion, completionText, fieldLabel, helpFor, isAnswered, isNA, partsFor, typeLabels, SIGNOFF_ROLES, type Answers, type Field, type NA } from "../../../lib/fields";
+import { completion, completionText, fieldLabel, helpFor, sourceLabel, isAnswered, isNA, partsFor, typeLabels, SIGNOFF_ROLES, type Answers, type Field, type NA } from "../../../lib/fields";
 import { blocking, checkPack, isStale, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../lib/checks";
 import { requireName } from "../../../lib/session";
 import { currentSignoffs, FACTORY_ID, getPack, getPackAtLeast, listPacks, type Comment } from "../../../lib/store";
@@ -64,13 +64,27 @@ export default async function PackPage({
           {pack.kind === "model" && <>{typeLabels(types, current ? current.otherType : pack.otherType)} · </>}
           {completionText(c)} ·{" "}
           {current ? <>Rev {v} published {when(current.publishedAt)} by {current.publishedBy}</> : "Not published yet"}
+          {pack.splitOverride && <><br />Kept as one pack by {pack.splitOverride.by}: “{pack.splitOverride.reason}”</>}
           {reviewFields.length > 0 && <span className="review-badge">{reviewFields.length} field{reviewFields.length === 1 ? "" : "s"} need{reviewFields.length === 1 ? "s" : ""} review</span>}
         </p>
         <ErrorNote error={error} />
         {published && <p className="ok-box">Published Rev {published}. Share this page&apos;s link with reviewers.</p>}
-        {pack.status === "draft" && v > 0 && (
+        {v > 0 && (pack.systemChanges?.length ?? 0) > 0 ? (
+          <div className="warn-box">
+            <strong>
+              The draft has {pack.systemChanges!.length} system change{pack.systemChanges!.length === 1 ? "" : "s"}.
+            </strong>{" "}
+            <Link href={`/packs/${id}/edit`}>View draft</Link>. This page shows Rev {v}, the last published revision.
+            <details>
+              <summary>What changed</summary>
+              <ul>
+                {pack.systemChanges!.map((c, i) => <li key={i}>{c.what}</li>)}
+              </ul>
+            </details>
+          </div>
+        ) : pack.status === "draft" && v > 0 ? (
           <p className="warn-box">A new draft is being edited. This page shows Rev {v}, the last published revision.</p>
-        )}
+        ) : null}
         {v === 0 && <p className="warn-box">Draft: not published yet. Reviewers can read and comment, but can&apos;t sign off until it&apos;s published.</p>}
 
         <div className="actions">
@@ -239,7 +253,7 @@ function Value({ field, answers }: { field: Field; answers: Answers }) {
         <thead><tr>{field.columns.map((c) => <th key={c.name}>{c.name}</th>)}</tr></thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i}>{r.map((cell, j) => <td key={j}>{cell || "—"}</td>)}</tr>
+            <tr key={i}>{r.map((cell, j) => <td key={j}>{(field.columns[j]?.name === "Source field" && cell ? sourceLabel(cell) : cell) || "—"}</td>)}</tr>
           ))}
         </tbody>
       </table>
