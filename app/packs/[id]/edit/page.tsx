@@ -4,7 +4,7 @@ import { deleteDraft, reopenPack } from "../../../../lib/actions";
 import ConfirmButton from "../../../ConfirmButton";
 import { requireName } from "../../../../lib/session";
 import { fieldLabel } from "../../../../lib/fields";
-import { getPackAtLeast } from "../../../../lib/store";
+import { FACTORY_ID, getPack, getPackAtLeast } from "../../../../lib/store";
 import Header, { ErrorNote, StatusPill } from "../../../Header";
 import EditForm from "./EditForm";
 
@@ -23,6 +23,8 @@ export default async function EditPage({
   const { pack, etag } = found;
 
   const editable = pack.status === "draft" || pack.status === "changes_requested";
+  const factory = pack.kind === "model" ? await getPack(FACTORY_ID) : null;
+  const requestProcess = typeof factory?.pack.answers.a9_request_process === "string" ? factory.pack.answers.a9_request_process : "";
   const open = pack.comments.filter((c) => !c.resolved);
 
   return (
@@ -37,7 +39,7 @@ export default async function EditPage({
           <form action={reopenPack} className="warn-box">
             <input type="hidden" name="id" value={id} />
             This pack is {pack.status === "launch_ready" ? "launch-ready" : "in review"}. Editing takes it out of
-            review and <strong>its sign-offs stop counting</strong>; you&apos;ll need to publish a new version.{" "}
+            review and <strong>its sign-offs stop counting</strong>; you&apos;ll need to publish a new Rev.{" "}
             <button type="submit">Edit anyway</button>
           </form>
         ) : (
@@ -54,6 +56,17 @@ export default async function EditPage({
                 </ul>
               </div>
             )}
+            {pack.needsReview && (
+              <div className="warn-box">
+                <strong>Needs review: moved to the new fact pack structure.</strong> Merged answers are joined under their new field,
+                labelled “From &lt;old field&gt;:”. Tidy them, then publish Rev {pack.version + 1}; publishing clears this flag.
+                {(pack.migrationNotes?.length ?? 0) > 0 && (
+                  <ul>
+                    {pack.migrationNotes!.map((n, i) => <li key={i}>{n}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
             <EditForm
               id={id}
               kind={pack.kind}
@@ -62,6 +75,9 @@ export default async function EditPage({
               initialOtherType={pack.otherType ?? ""}
               initialAnswers={pack.answers}
               initialEtag={etag}
+              initialNa={pack.na ?? {}}
+              splitOverride={pack.splitOverride ?? null}
+              factoryRequestProcess={requestProcess}
               version={pack.version}
             />
             {pack.kind === "model" && pack.version === 0 && (

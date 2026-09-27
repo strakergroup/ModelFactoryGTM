@@ -24,7 +24,7 @@ export default async function PublicView({ params }: { params: Promise<{ id: str
       <main className="page">
         <p className="crumb"><Link href={`/packs/${id}`}>← Back to review view</Link></p>
         <h1>{pack.name} <StatusPill status={pack.status} /></h1>
-        <p className="muted">Public-only view: fields tagged P · Public from v{pack.version || "—"}. NDA and Internal fields are left out.</p>
+        <p className="muted">Public-only view: fields tagged P · Public from Rev {pack.version || "—"}. NDA and Internal fields are left out.</p>
         {!ready && (
           <p className="warn-box">
             <strong>Not approved for external use yet.</strong> This pack isn&apos;t launch-ready, so nothing here should go on the website, a one-pager or Sage.
@@ -51,7 +51,7 @@ export default async function PublicView({ params }: { params: Promise<{ id: str
                         ) : (
                           <div className="table-wrap">
                             <table>
-                              <thead><tr>{f.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+                              <thead><tr>{f.columns.map((c) => <th key={c.name}>{c.name}</th>)}</tr></thead>
                               <tbody>
                                 {(answers[f.key] as string[][])
                                   .filter((r) => r.slice(f.presetRows ? 1 : 0).some((c) => c.trim()))

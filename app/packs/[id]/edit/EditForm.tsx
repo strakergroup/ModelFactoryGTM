@@ -1,18 +1,26 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { publishPack, saveDraft } from "../../../../lib/actions";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { clearSplitOverride, publishPack, saveDraft, saveSplitOverride } from "../../../../lib/actions";
+import { blocking, checkPack, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../../lib/checks";
 import {
   MODEL_TYPES,
+  NA_MIN,
   completion,
+  completionText,
   emptyTable,
-  isAnswered,
+  fieldLabel,
+  helpFor,
+  isDone,
   partsFor,
   TAG_LABEL,
   TAG_MEANING,
   type Answers,
+  type Field,
+  type NA,
   type TableField,
 } from "../../../../lib/fields";
+import { plusSixMonths } from "../../../../lib/migrate";
 
 type Props = {
   id: string;
@@ -21,19 +29,28 @@ type Props = {
   initialModelTypes: string[];
   initialOtherType: string;
   initialAnswers: Answers;
+  initialNa: NA;
   initialEtag: string;
   version: number;
+  splitOverride: { reason: string; by: string; at: string } | null;
+  factoryRequestProcess: string;
 };
 
-export default function EditForm({ id, kind, initialName, initialModelTypes, initialOtherType, initialAnswers, initialEtag, version }: Props) {
-  const [modelTypes, setModelTypes] = useState<string[]>(initialModelTypes);
-  const [otherType, setOtherType] = useState(initialOtherType);
-  const [answers, setAnswers] = useState<Answers>(initialAnswers);
-  const [name, setName] = useState(initialName);
+const CLAIMS_KEY = "e_claims";
+const today = () => new Date().toISOString().slice(0, 10);
+
+export default function EditForm(props: Props) {
+  const { id, kind, version, splitOverride, factoryRequestProcess } = props;
+  const [modelTypes, setModelTypes] = useState<string[]>(props.initialModelTypes);
+  const [otherType, setOtherType] = useState(props.initialOtherType);
+  const [answers, setAnswers] = useState<Answers>(props.initialAnswers);
+  const [na, setNa] = useState<NA>(props.initialNa);
+  const [naOpen, setNaOpen] = useState<Set<string>>(new Set(Object.keys(props.initialNa)));
+  const [name, setName] = useState(props.initialName);
   const [state, setState] = useState<"saved" | "dirty" | "saving" | "error">("saved");
   const [message, setMessage] = useState("");
   const first = useRef(true);
-  const etag = useRef(initialEtag);
+  const etag = useRef(props.initialEtag);
 
   useEffect(() => {
     if (first.current) {
@@ -44,7 +61,7 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
     const timer = setTimeout(async () => {
       setState("saving");
       try {
-        const res = await saveDraft(id, answers, etag.current, kind === "model" ? { name, modelTypes, otherType } : undefined);
+        const res = await saveDraft(id, answers, etag.current, kind === "model" ? { name, modelTypes, otherType } : undefined, na);
         if (res.ok) {
           etag.current = res.etag;
           setState("saved");
@@ -59,7 +76,7 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [answers, name, modelTypes, otherType, id, kind]);
+  }, [answers, na, name, modelTypes, otherType, id, kind]);
 
   // Warn before leaving with unsaved typing.
   useEffect(() => {
@@ -74,14 +91,39 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
   const table = (f: TableField) => (Array.isArray(answers[f.key]) ? (answers[f.key] as string[][]) : emptyTable(f));
   const setTable = (key: string, rows: string[][]) => setAnswers((a) => ({ ...a, [key]: rows }));
 
+  const toggleNa = (key: string, on: boolean) => {
+    setNaOpen((s) => {
+      const next = new Set(s);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+    if (!on) setNa((n) => Object.fromEntries(Object.entries(n).filter(([k]) => k !== key)));
+  };
+
+  // "Create claim from this field": a pre-filled claims row linked back to the field.
+  const claimsField = partsFor("model", []).flatMap((p) => p.sections.flatMap((s) => s.fields)).find((f) => f.key === CLAIMS_KEY) as TableField;
+  const createClaim = (f: Field, text: string) => {
+    const rows = table(claimsField).filter((r) => r.some((c) => c.trim()));
+    setTable(CLAIMS_KEY, [...rows, [text.trim(), name, "", f.tag, "", "", f.key]]);
+    setTimeout(() => document.getElementById(`ed-${CLAIMS_KEY}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
+
   const parts = partsFor(kind, modelTypes);
-  const c = completion(kind, modelTypes, answers);
+  const c = completion(kind, modelTypes, answers, na);
+  const issues = useMemo(
+    () => checkPack({ kind, modelTypes, answers, na, splitOverride }),
+    [kind, modelTypes, answers, na, splitOverride],
+  );
+  const issuesFor = (key: string) => issues.filter((i) => i.key === key);
+  const blockers = blocking(issues);
+  const packIssue = issues.find((i) => i.key === PACK_KEY);
 
   return (
     <div className="edit">
       <div className="edit-bar">
         <div>
-          <strong>{c.done} of {c.total}</strong> answered
+          <strong>{completionText(c)}</strong>
           <span className={`save-state ${state}`}>
             {state === "saving" ? "Saving…" : state === "dirty" ? "Unsaved changes" : message}
           </span>
@@ -89,10 +131,36 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
         <form action={publishPack}>
           <input type="hidden" name="id" value={id} />
           <button type="submit" disabled={state !== "saved"} title={state !== "saved" ? "Wait for your changes to save" : ""}>
-            Publish v{version + 1} for review
+            Publish Rev {version + 1} for review
           </button>
         </form>
       </div>
+
+      {blockers.length > 0 ? (
+        <div className="block-box">
+          <strong>{blockers.length} blocking issue{blockers.length === 1 ? "" : "s"}.</strong> You can publish for review, but this pack
+          can&apos;t become Launch-ready until they&apos;re fixed.
+          <ul>
+            {(Object.keys(ISSUE_TITLE) as Issue["kind"][]).map((k) => {
+              const list = issues.filter((i) => i.kind === k);
+              if (!list.length) return null;
+              return (
+                <li key={k}>
+                  <strong>{ISSUE_TITLE[k]}:</strong>{" "}
+                  {[...new Set(list.map((i) => i.key))].map((key, n) => (
+                    <span key={key}>
+                      {n > 0 && ", "}
+                      <a href={`#ed-${key}`}>{key === PACK_KEY ? "pack type" : fieldLabel(key)}</a>
+                    </span>
+                  ))}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : (
+        <p className="ok-box">No blocking issues. Once published and signed off by all four roles, this pack becomes Launch-ready.</p>
+      )}
 
       <p className="muted small legend">
         {(["P", "N", "I"] as const).map((t) => (
@@ -100,10 +168,11 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
             <span className={`tag t${t.toLowerCase()}`}>{t} · {TAG_LABEL[t]}</span> {TAG_MEANING[t]}
           </span>
         ))}
+        <span><span className="req">Required</span> must be answered, or marked N/A with a reason</span>
       </p>
 
       {kind === "model" && (
-        <div className="field">
+        <div className="field" id={`ed-${PACK_KEY}`}>
           <label htmlFor="pack-name" className="field-label">Model name</label>
           <input id="pack-name" value={name} onChange={(e) => setName(e.target.value)} />
           <fieldset className="types">
@@ -114,9 +183,7 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
                 <input
                   type="checkbox"
                   checked={modelTypes.includes(m.id)}
-                  onChange={(e) =>
-                    setModelTypes((ts) => (e.target.checked ? [...ts, m.id] : ts.filter((t) => t !== m.id)))
-                  }
+                  onChange={(e) => setModelTypes((ts) => (e.target.checked ? [...ts, m.id] : ts.filter((t) => t !== m.id)))}
                 />{" "}
                 {m.label}
               </label>
@@ -135,6 +202,30 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
               <p className="error small">Type what kind of model it is. You can&apos;t publish until you do.</p>
             )}
           </fieldset>
+
+          {modelTypes.includes("custom_mt") && modelTypes.includes("customer_trained") && (
+            <div className={packIssue ? "flag flag-block" : "flag flag-ok"}>
+              <strong>{packIssue ? "Pack covers two products." : "Kept as one pack."}</strong>{" "}
+              This pack covers a shared model and a customer-trained build. Split it unless both are sold under one SKU.
+              {splitOverride ? (
+                <form action={clearSplitOverride} className="inline-form">
+                  <input type="hidden" name="id" value={id} />
+                  <span className="small">
+                    Override by {splitOverride.by}: “{splitOverride.reason}”
+                  </span>{" "}
+                  <button type="submit" className="link-button" disabled={state !== "saved"}>Remove override</button>
+                </form>
+              ) : (
+                <form action={saveSplitOverride} className="inline-form">
+                  <input type="hidden" name="id" value={id} />
+                  <input name="reason" placeholder="Why both belong in one pack (e.g. sold under one SKU)" minLength={10} required aria-label="Override reason" />
+                  <button type="submit" className="secondary" disabled={state !== "saved"} title={state !== "saved" ? "Wait for your changes to save" : ""}>
+                    Keep as one pack
+                  </button>
+                </form>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -145,25 +236,63 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
           {part.sections.map((s) => (
             <div key={s.id} className="section">
               <h3>{s.title}</h3>
-              {s.fields.map((f) => (
-                <div key={f.key} className={`field ${isAnswered(f, answers) ? "done" : ""}`}>
-                  <div className="field-head">
-                    <label htmlFor={f.key} className="field-label">{f.label}</label>
-                    <span className={`tag t${f.tag.toLowerCase()}`}>{f.tag} · {TAG_LABEL[f.tag]}</span>
-                  </div>
-                  <p className="help">{f.help}</p>
-                  {f.kind === "text" ? (
-                    <textarea
-                      id={f.key}
-                      rows={2}
-                      value={(answers[f.key] as string) ?? ""}
-                      onChange={(e) => setText(f.key, e.target.value)}
-                    />
-                  ) : (
-                    <TableEditor field={f} rows={table(f)} onChange={(rows) => setTable(f.key, rows)} />
-                  )}
+              {s.readonlyFactory && kind === "model" && (
+                <div className="field readonly">
+                  <div className="field-label">{s.readonlyFactory.label}</div>
+                  <p className="help">Set once for every pack on the factory fact sheet (Part A, A9). Read-only here.</p>
+                  <p className="answer">{factoryRequestProcess || <span className="gap">Not set on the factory fact sheet yet</span>}</p>
                 </div>
-              ))}
+              )}
+              {s.fields.map((f) => {
+                const own = issuesFor(f.key);
+                const isNaOpen = naOpen.has(f.key);
+                return (
+                  <div
+                    key={f.key}
+                    id={`ed-${f.key}`}
+                    className={`field ${f.subOf ? "sub" : ""} ${isDone(f, answers, na) ? "done" : ""} ${own.some((i) => i.blocking) ? "flagged" : ""}`}
+                  >
+                    <div className="field-head">
+                      <label htmlFor={f.key} className="field-label">
+                        {f.subOf ? "↳ " : ""}
+                        {f.label}
+                        {f.required && <span className="req">Required</span>}
+                      </label>
+                      <span className={`tag t${f.tag.toLowerCase()}`}>{f.tag} · {TAG_LABEL[f.tag]}</span>
+                    </div>
+                    <p className="help">{helpFor(f, modelTypes)}</p>
+
+                    {isNaOpen ? (
+                      <input
+                        className="na-reason"
+                        value={na[f.key] ?? ""}
+                        onChange={(e) => setNa((n) => ({ ...n, [f.key]: e.target.value }))}
+                        placeholder={`Why this doesn't apply (at least ${NA_MIN} characters)`}
+                        aria-label={`${f.label}: reason for N/A`}
+                      />
+                    ) : f.kind === "text" ? (
+                      <textarea id={f.key} rows={2} value={(answers[f.key] as string) ?? ""} onChange={(e) => setText(f.key, e.target.value)} />
+                    ) : (
+                      <TableEditor field={f} rows={table(f)} onChange={(rows) => setTable(f.key, rows)} />
+                    )}
+
+                    <label className="check small na-toggle">
+                      <input type="checkbox" checked={isNaOpen} onChange={(e) => toggleNa(f.key, e.target.checked)} /> Doesn&apos;t apply (N/A)
+                    </label>
+
+                    {own.map((i, n) => (
+                      <div key={n} className={`flag ${i.blocking ? "flag-block" : "flag-warn"}`}>
+                        {i.message}
+                        {i.kind === "claim" && (
+                          <button type="button" className="secondary small-button" onClick={() => createClaim(f, i.text ?? String(answers[f.key] ?? ""))}>
+                            Create claim from this field
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           ))}
         </section>
@@ -173,37 +302,61 @@ export default function EditForm({ id, kind, initialName, initialModelTypes, ini
 }
 
 function TableEditor({ field, rows, onChange }: { field: TableField; rows: string[][]; onChange: (r: string[][]) => void }) {
-  const set = (r: number, c: number, v: string) => onChange(rows.map((row, i) => (i === r ? row.map((x, j) => (j === c ? v : x)) : row)));
+  const measured = field.columns.findIndex((c) => c.name === "Date measured");
+  const revalidate = field.columns.findIndex((c) => c.name === "Re-validate by");
+  const source = field.columns.findIndex((c) => c.name === "Source field");
+  const set = (r: number, c: number, v: string) =>
+    onChange(
+      rows.map((row, i) => {
+        if (i !== r) return row;
+        const next = row.map((x, j) => (j === c ? v : x));
+        // Default re-validation: measurement date + 6 months, unless already set.
+        if (c === measured && revalidate >= 0 && !row[revalidate]) next[revalidate] = plusSixMonths(v);
+        return next;
+      }),
+    );
   return (
     <div className="table-wrap">
       <table className="edit-table">
         <thead>
           <tr>
-            {field.columns.map((c) => <th key={c}>{c}</th>)}
+            {field.columns.map((c) => <th key={c.name}>{c.name}</th>)}
             {!field.presetRows && <th aria-label="Remove" />}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, r) => (
-            <tr key={r}>
-              {row.map((cell, c) =>
-                field.presetRows && c === 0 ? (
-                  <td key={c} className="preset">{cell}</td>
-                ) : (
-                  <td key={c}>
-                    <input aria-label={field.columns[c]} value={cell} onChange={(e) => set(r, c, e.target.value)} />
+          {rows.map((row, r) => {
+            const expired = revalidate >= 0 && row[revalidate] && row[revalidate] < today();
+            return (
+              <tr key={r} className={expired ? "expired-row" : ""}>
+                {field.columns.map((col, c) => {
+                  const cell = row[c] ?? "";
+                  if (field.presetRows && c === 0) return <td key={c} className="preset">{cell}</td>;
+                  return (
+                    <td key={c}>
+                      {col.type === "select" ? (
+                        <select aria-label={col.name} value={cell} onChange={(e) => set(r, c, e.target.value)}>
+                          <option value="">—</option>
+                          {col.options?.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <input type={col.type === "date" ? "date" : "text"} aria-label={col.name} value={cell} onChange={(e) => set(r, c, e.target.value)} />
+                      )}
+                      {c === source && cell && <a className="small" href={`#ed-${cell}`}>{fieldLabel(cell)} ↗</a>}
+                      {c === revalidate && expired && <span className="flag-inline">Past re-validate date</span>}
+                    </td>
+                  );
+                })}
+                {!field.presetRows && (
+                  <td>
+                    <button type="button" className="link-button" onClick={() => onChange(rows.filter((_, i) => i !== r))} disabled={rows.length === 1}>
+                      Remove
+                    </button>
                   </td>
-                ),
-              )}
-              {!field.presetRows && (
-                <td>
-                  <button type="button" className="link-button" onClick={() => onChange(rows.filter((_, i) => i !== r))} disabled={rows.length === 1}>
-                    Remove
-                  </button>
-                </td>
-              )}
-            </tr>
-          ))}
+                )}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {!field.presetRows && (

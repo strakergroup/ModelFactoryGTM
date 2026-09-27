@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { addComment, requestChanges, resolveComment, signOff } from "../../../lib/actions";
-import { completion, isAnswered, partsFor, typeLabels, SIGNOFF_ROLES, type Answers, type Field } from "../../../lib/fields";
+import { completion, completionText, fieldLabel, helpFor, isAnswered, isNA, partsFor, typeLabels, SIGNOFF_ROLES, type Answers, type Field, type NA } from "../../../lib/fields";
+import { blocking, checkPack, ISSUE_TITLE, PACK_KEY, type Issue } from "../../../lib/checks";
 import { requireName } from "../../../lib/session";
-import { currentSignoffs, getPackAtLeast, listPacks, type Comment } from "../../../lib/store";
+import { currentSignoffs, FACTORY_ID, getPack, getPackAtLeast, listPacks, type Comment } from "../../../lib/store";
 import Header, { ErrorNote, StatusPill, TagPill } from "../../Header";
 
 const when = (iso: string) =>
@@ -33,7 +34,14 @@ export default async function PackPage({
   const changed = (f: Field) => prevAnswers !== null && JSON.stringify(prevAnswers[f.key] ?? null) !== JSON.stringify(shown[f.key] ?? null);
 
   const parts = partsFor(pack.kind, types);
-  const c = completion(pack.kind, types, shown);
+  const shownNa: NA = (current ? current.na : pack.na) ?? {};
+  const shownOverride = current ? current.splitOverride : pack.splitOverride;
+  const c = completion(pack.kind, types, shown, shownNa);
+  const issues = checkPack({ kind: pack.kind, modelTypes: types, answers: shown, na: shownNa, splitOverride: shownOverride });
+  const blockers = blocking(issues);
+  const issuesFor = (key: string) => issues.filter((i) => i.key === key);
+  const factory = pack.kind === "model" ? await getPack(FACTORY_ID) : null;
+  const requestProcess = typeof factory?.pack.answers.a9_request_process === "string" ? factory.pack.answers.a9_request_process : "";
   const byField = (key: string) => pack.comments.filter((x) => x.field === key);
   const changedCount = prevAnswers ? parts.flatMap((p) => p.sections.flatMap((s) => s.fields)).filter(changed).length : 0;
   const signed = new Map(currentSignoffs(pack).map((s) => [s.role, s]));
@@ -49,24 +57,53 @@ export default async function PackPage({
         <h1>{pack.name} <StatusPill status={pack.status} /></h1>
         <p className="muted">
           {pack.kind === "model" && <>{typeLabels(types, current ? current.otherType : pack.otherType)} · </>}
-          {c.done} of {c.total} answered ·{" "}
-          {current ? <>v{v} published {when(current.publishedAt)} by {current.publishedBy}</> : "Not published yet"}
+          {completionText(c)} ·{" "}
+          {current ? <>Rev {v} published {when(current.publishedAt)} by {current.publishedBy}</> : "Not published yet"}
         </p>
         <ErrorNote error={error} />
-        {published && <p className="ok-box">Published v{published}. Share this page&apos;s link with reviewers.</p>}
+        {published && <p className="ok-box">Published Rev {published}. Share this page&apos;s link with reviewers.</p>}
         {pack.status === "draft" && v > 0 && (
-          <p className="warn-box">A new draft is being edited. This page shows v{v}, the last published version.</p>
+          <p className="warn-box">A new draft is being edited. This page shows Rev {v}, the last published revision.</p>
         )}
         {v === 0 && <p className="warn-box">Draft: not published yet. Reviewers can read and comment, but can&apos;t sign off until it&apos;s published.</p>}
 
         <div className="actions">
           <Link className="button" href={`/packs/${id}/edit`}>Edit</Link>
           <Link className="button secondary" href={`/packs/${id}/public`}>Public-only view</Link>
-          {prevAnswers && <span className="muted small">{changedCount} field{changedCount === 1 ? "" : "s"} changed since v{v - 1} (marked <span className="changed-dot">changed</span>)</span>}
+          {prevAnswers && <span className="muted small">{changedCount} field{changedCount === 1 ? "" : "s"} changed since Rev {v - 1} (marked <span className="changed-dot">changed</span>)</span>}
         </div>
 
+        {v > 0 && (blockers.length > 0 ? (
+          <div className="block-box">
+            <strong>Rev {v} can&apos;t become Launch-ready: {blockers.length} blocking issue{blockers.length === 1 ? "" : "s"}.</strong>{" "}
+            Sign-offs are recorded, but the model team must fix these and publish a new Rev.
+            <ul>
+              {(Object.keys(ISSUE_TITLE) as Issue["kind"][]).map((k) => {
+                const list = issues.filter((i) => i.kind === k);
+                if (!list.length) return null;
+                return (
+                  <li key={k}>
+                    <strong>{ISSUE_TITLE[k]}:</strong>{" "}
+                    {[...new Set(list.map((i) => i.key))].map((key, n) => (
+                      <span key={key}>{n > 0 && ", "}<a href={`#f-${key}`}>{key === PACK_KEY ? "pack type" : fieldLabel(key)}</a></span>
+                    ))}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : (
+          <p className="ok-box">Rev {v} has no blocking issues. It becomes Launch-ready when all four roles sign off.</p>
+        ))}
+        {issuesFor(PACK_KEY).map((i, n) => (
+          <div key={n} id={`f-${PACK_KEY}`} className="flag flag-block">{i.message}</div>
+        ))}
+        {shownOverride && (
+          <p className="flag flag-ok">Kept as one pack by {shownOverride.by}: “{shownOverride.reason}”</p>
+        )}
+
         <section className="signoff">
-          <h2>Sign-off {v > 0 && <span className="muted small">on v{v}</span>}</h2>
+          <h2>Sign-off {v > 0 && <span className="muted small">on Rev {v}</span>}</h2>
           <p className="help">Sign off only for a role you hold. Your name ({name}) is recorded with it.</p>
           <div className="signoff-grid">
             {SIGNOFF_ROLES.map((r) => {
@@ -82,7 +119,7 @@ export default async function PackPage({
                       <input type="hidden" name="id" value={id} />
                       <input type="hidden" name="role" value={r.role} />
                       <input name="note" placeholder="Note (optional)" aria-label={`${r.label} note`} />
-                      <button type="submit">Sign off v{v} as {r.label}</button>
+                      <button type="submit">Sign off Rev {v} as {r.label}</button>
                     </form>
                   ) : (
                     <div className="muted small">Waiting</div>
@@ -128,17 +165,26 @@ export default async function PackPage({
             {part.sections.map((s) => (
               <div key={s.id} className="section">
                 <h3>{s.title}</h3>
+                {s.readonlyFactory && pack.kind === "model" && (
+                  <div className="review-field readonly">
+                    <div className="field-label">{s.readonlyFactory.label}</div>
+                    <p className="answer">{requestProcess || <span className="gap">Not set on the factory fact sheet yet</span>}</p>
+                  </div>
+                )}
                 {s.fields.map((f) => {
                   const thread = byField(f.key);
                   const open = thread.filter((x) => !x.resolved).length;
                   return (
-                    <div key={f.key} id={`f-${f.key}`} className="review-field">
+                    <div key={f.key} id={`f-${f.key}`} className={`review-field ${f.subOf ? "sub" : ""} ${issuesFor(f.key).some((i) => i.blocking) ? "flagged" : ""}`}>
                       <div className="field-head">
-                        <span className="field-label">{f.label}{changed(f) && <span className="changed-dot">changed</span>}</span>
+                        <span className="field-label">{f.subOf ? "↳ " : ""}{f.label}{f.required && <span className="req">Required</span>}{changed(f) && <span className="changed-dot">changed</span>}</span>
                         <TagPill tag={f.tag} />
                       </div>
-                      <p className="help">{f.help}</p>
-                      <Value field={f} answers={shown} />
+                      <p className="help">{helpFor(f, types)}</p>
+                      {isNA(f, shownNa) ? <p className="answer muted">N/A: {shownNa[f.key]}</p> : <Value field={f} answers={shown} />}
+                      {issuesFor(f.key).map((i, n) => (
+                        <div key={n} className={`flag ${i.blocking ? "flag-block" : "flag-warn"}`}>{i.message}</div>
+                      ))}
                       <details className="comments" open={open > 0}>
                         <summary>{thread.length ? `${thread.length} comment${thread.length > 1 ? "s" : ""}${open ? ` · ${open} open` : ""}` : "Comment"}</summary>
                         <Thread packId={id} field={f.key} comments={thread} />
@@ -175,7 +221,7 @@ function Value({ field, answers }: { field: Field; answers: Answers }) {
   return (
     <div className="table-wrap">
       <table>
-        <thead><tr>{field.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+        <thead><tr>{field.columns.map((c) => <th key={c.name}>{c.name}</th>)}</tr></thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i}>{r.map((cell, j) => <td key={j}>{cell || "—"}</td>)}</tr>
@@ -192,7 +238,7 @@ function Thread({ packId, field, comments }: { packId: string; field: string; co
       {comments.map((c) => (
         <div key={c.id} className={`comment ${c.resolved ? "resolved" : ""}`}>
           <div className="muted small">
-            {c.by} · {when(c.at)} · on v{c.version}
+            {c.by} · {when(c.at)} · on Rev {c.version}
             {c.resolved ? " · resolved" : ""}
           </div>
           <div>{c.body}</div>

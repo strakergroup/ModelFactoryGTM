@@ -1,7 +1,8 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import type { Answers } from "./fields";
+import type { Answers, NA } from "./fields";
+import { blocking, checkPack } from "./checks";
 import { MODEL_TYPES, SIGNOFF_ROLES } from "./fields";
 import { requireName } from "./session";
 import { ConflictError, currentSignoffs, deletePackFile, getPack, newPack, savePack, type Pack } from "./store";
@@ -43,6 +44,7 @@ export async function saveDraft(
   answers: Answers,
   etag: string,
   meta?: { name: string; modelTypes: string[]; otherType: string },
+  na?: NA,
 ): Promise<{ ok: true; etag: string; at: string } | { ok: false; error: string }> {
   const by = await requireName();
   const found = await getPack(id);
@@ -52,6 +54,7 @@ export async function saveDraft(
     return { ok: false, error: "This pack is in review and can't be edited. Reload the page." };
   }
   pack.answers = answers;
+  if (na) pack.na = Object.fromEntries(Object.entries(na).filter(([, r]) => r.trim()).map(([k, r]) => [k, r.slice(0, 500)]));
   if (meta && pack.kind === "model") {
     pack.name = meta.name.trim() || "Untitled model";
     // Answers for a type that's unticked are kept, just hidden, so re-ticking it brings them back.
@@ -89,10 +92,27 @@ export async function publishPack(formData: FormData) {
     if (p.status !== "draft" && p.status !== "changes_requested") return "This pack is already published.";
     version = p.version + 1;
     if (p.modelTypes.includes("other") && !p.otherType?.trim()) return "You ticked Other: type what kind of model it is before publishing.";
-    p.versions.push({ version, name: p.name, modelTypes: p.modelTypes, otherType: p.otherType, answers: p.answers, publishedBy: by, publishedAt: now() });
+    p.versions.push({
+      version,
+      name: p.name,
+      modelTypes: p.modelTypes,
+      otherType: p.otherType,
+      answers: p.answers,
+      na: p.na,
+      splitOverride: p.splitOverride,
+      publishedBy: by,
+      publishedAt: now(),
+    });
     p.version = version;
     p.status = "in_review";
-    p.activity.push({ at: now(), by, action: `published v${version}` });
+    // Publishing is the review of the migrated content; the notes stay in the activity log.
+    if (p.needsReview) {
+      p.activity.push({ at: now(), by, action: "reviewed the move to the new structure", detail: p.migrationNotes?.join(" | ") || undefined });
+      p.needsReview = false;
+      p.migrationNotes = [];
+    }
+    const open = blocking(checkOf(p));
+    p.activity.push({ at: now(), by, action: `published Rev ${version}`, detail: open.length ? `${open.length} blocking issue(s) still open` : undefined });
   });
   redirect(`/packs/${id}?published=${version}&rev=${rev}`);
 }
@@ -133,12 +153,18 @@ export async function signOff(formData: FormData) {
   if (!label) back(id, "Unknown sign-off role.");
   const rev = await update(id, (p) => {
     if (p.status !== "in_review") return "Only packs in review can be signed off.";
-    if (currentSignoffs(p).some((s) => s.role === role)) return `${label} has already signed off v${p.version}.`;
+    if (currentSignoffs(p).some((s) => s.role === role)) return `${label} has already signed off Rev ${p.version}.`;
     p.signoffs.push({ version: p.version, role, by, note, at: now() });
-    p.activity.push({ at: now(), by, action: `signed off v${p.version} as ${label}`, detail: note ?? undefined });
+    p.activity.push({ at: now(), by, action: `signed off Rev ${p.version} as ${label}`, detail: note ?? undefined });
+    // Launch-ready needs all four sign-offs AND no blocking issues on the published Rev.
     if (new Set(currentSignoffs(p).map((s) => s.role)).size === SIGNOFF_ROLES.length) {
-      p.status = "launch_ready";
-      p.activity.push({ at: now(), by: "System", action: `v${p.version} is launch-ready` });
+      const open = blocking(checkOf(p));
+      if (open.length) {
+        p.activity.push({ at: now(), by: "System", action: `Rev ${p.version} has all four sign-offs but can't be launch-ready`, detail: `${open.length} blocking issue(s)` });
+      } else {
+        p.status = "launch_ready";
+        p.activity.push({ at: now(), by: "System", action: `Rev ${p.version} is launch-ready` });
+      }
     }
   });
   redirect(`/packs/${id}?rev=${rev}`);
@@ -179,4 +205,41 @@ export async function deleteDraft(formData: FormData) {
   if (pack.kind !== "model" || pack.version > 0) back(id, "Only models that were never published can be deleted.");
   await deletePackFile(id);
   redirect("/");
+}
+
+// Checks for the latest published Rev (what reviewers signed).
+function checkOf(p: Pack) {
+  const v = p.versions.find((x) => x.version === p.version);
+  return checkPack({
+    kind: p.kind,
+    modelTypes: v?.modelTypes ?? p.modelTypes,
+    answers: v?.answers ?? p.answers,
+    na: v?.na ?? p.na,
+    splitOverride: v ? v.splitOverride : p.splitOverride,
+  });
+}
+
+// Keep a shared model and a customer-trained build in one pack, with a reason.
+export async function saveSplitOverride(formData: FormData) {
+  const id = String(formData.get("id"));
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
+  const by = await requireName();
+  if (reason.length < 10) redirect(`/packs/${id}/edit?error=${encodeURIComponent("Give a reason of at least 10 characters for keeping both in one pack.")}`);
+  const rev = await update(id, (p) => {
+    if (p.status !== "draft" && p.status !== "changes_requested") return "Reopen the pack for editing first.";
+    p.splitOverride = { reason, by, at: now() };
+    p.activity.push({ at: now(), by, action: "kept both products in one pack", detail: reason });
+  });
+  redirect(`/packs/${id}/edit?rev=${rev}`);
+}
+
+export async function clearSplitOverride(formData: FormData) {
+  const id = String(formData.get("id"));
+  const by = await requireName();
+  const rev = await update(id, (p) => {
+    if (p.status !== "draft" && p.status !== "changes_requested") return "Reopen the pack for editing first.";
+    p.splitOverride = undefined;
+    p.activity.push({ at: now(), by, action: "removed the one-pack override" });
+  });
+  redirect(`/packs/${id}/edit?rev=${rev}`);
 }

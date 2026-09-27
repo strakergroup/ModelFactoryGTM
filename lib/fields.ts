@@ -1,5 +1,8 @@
-// Every section and field of the Custom Models Go-to-Market Fact Pack,
-// taken from Sample-Model-Fact-Pack.docx. To add a field, add one line here.
+// Every section and field of the Custom Models Go-to-Market Fact Pack.
+// Schema v2 (27 Sep 2026): merged duplicates, Required/Optional per field,
+// type-dependent help. See CHANGELOG.md. To add a field, add one line here.
+
+export const SCHEMA_VERSION = 2;
 
 export type Tag = "P" | "N" | "I";
 export const TAG_LABEL: Record<Tag, string> = { P: "Public", N: "Under NDA", I: "Internal" };
@@ -9,22 +12,35 @@ export const TAG_MEANING: Record<Tag, string> = {
   I: "Never leaves arbitr",
 };
 
-export type TextField = { kind: "text"; key: string; label: string; help: string; tag: Tag };
-export type TableField = {
-  kind: "table";
+type Common = {
   key: string;
   label: string;
   help: string;
   tag: Tag;
-  columns: string[];
+  required?: boolean;
+  // Extra help shown when a model type is active, e.g. LLM-only prompts.
+  helpFor?: Partial<Record<string, string>>;
+  // Replaces the help entirely for a model type (first active match wins).
+  helpReplaceFor?: Partial<Record<string, string>>;
+  showFor?: string; // only shown when this model type is active
+  subOf?: string; // rendered as an indented sub-note under another field
+};
+export type TextField = Common & { kind: "text" };
+export type Column = { name: string; type?: "text" | "date" | "select"; options?: string[] };
+export type TableField = Common & {
+  kind: "table";
+  columns: Column[];
   presetRows?: string[]; // first column fixed, e.g. asset names
 };
 export type Field = TextField | TableField;
-export type Section = { id: string; title: string; fields: Field[] };
+export type Section = { id: string; title: string; fields: Field[]; readonlyFactory?: { key: string; label: string } };
 // draft: questions written by us, not yet confirmed by the model team.
 export type Part = { id: string; title: string; sections: Section[]; showFor?: string; draft?: boolean };
 
-const t = (key: string, label: string, help: string, tag: Tag): TextField => ({ kind: "text", key, label, help, tag });
+type Opts = Omit<Common, "key" | "label" | "help" | "tag">;
+const t = (key: string, label: string, help: string, tag: Tag, opts: Opts = {}): TextField => ({ kind: "text", key, label, help, tag, ...opts });
+const req = { required: true };
+const col = (name: string, extra: Omit<Column, "name"> = {}): Column => ({ name, ...extra });
 
 export const MODEL_TYPES = [
   { id: "custom_mt", label: "Custom Language Model" },
@@ -33,6 +49,8 @@ export const MODEL_TYPES = [
   { id: "customer_trained", label: "Custom Customer Model" },
   { id: "other", label: "Other" }, // free text in Pack.otherType; no extra questions
 ] as const;
+
+export const SCALES = ["0–1", "0–100", "minutes", "%"];
 
 export const FACTORY_PARTS: Part[] = [
   {
@@ -125,6 +143,18 @@ export const FACTORY_PARTS: Part[] = [
           t("a8_support", "Support", "Channels, hours, response targets, escalation path", "P"),
         ],
       },
+      {
+        id: "A9",
+        title: "A9. Factory-wide settings",
+        fields: [
+          t(
+            "a9_request_process",
+            "Request process",
+            "Where a customer or rep requests a model, who picks it up, and response time. Shown read-only in D3 of every model pack.",
+            "P",
+          ),
+        ],
+      },
     ],
   },
 ];
@@ -138,32 +168,38 @@ export const MODEL_PARTS: Part[] = [
         id: "B1",
         title: "B1. Identity",
         fields: [
-          t("b1_name_version", "Model name and version", "Internal ID and external product name", "P"),
-          t("b1_status", "Status", "Research, Beta or GA, and GA date", "P"),
-          t("b1_owner", "Owner", "Accountable person on the model team", "I"),
-          t("b1_base_model", "Base model", "Foundation model, version and licence", "N"),
-          t("b1_one_line", "One-line value", "What it does better, for whom, in under 20 words", "P"),
+          t("b1_name_version", "Model name and version", "Internal ID and external product name", "P", req),
+          t("b1_status", "Status", "Research, Beta or GA, and GA date", "P", req),
+          t("b1_owner", "Owner", "Accountable person on the model team", "I", req),
+          t("b1_base_model", "Base model", "Foundation model, version and licence", "N", req),
+          t("b1_one_line", "One-line value", "What it does better, for whom, in under 20 words", "P", req),
         ],
       },
       {
         id: "B2",
         title: "B2. Intended use",
         fields: [
-          t("b2_use_cases", "Primary use cases", "The jobs this model is built for, most important first", "P"),
-          t("b2_customers", "Target customers", "Industries, content types and teams it suits best", "P"),
-          t("b2_out_of_scope", "Out of scope", "Uses we do not support or recommend (e.g. unreviewed legal or medical publishing)", "P"),
-          t("b2_oversight", "Required oversight", "Minimum arbitr assurance level or human review we recommend", "P"),
+          t("b2_use_cases", "Primary use cases", "The jobs this model is built for, most important first", "P", req),
+          t("b2_customers", "Target customers", "Industries, content types and teams it suits best", "P", req),
+          t("b2_out_of_scope", "Out of scope", "Uses we do not support or recommend (e.g. unreviewed legal or medical publishing)", "P", req),
+          t(
+            "b2_oversight_assurance",
+            "Oversight and assurance",
+            "The minimum arbitr assurance level, the assurance levels it is approved for, and the human review we recommend",
+            "P",
+            req,
+          ),
         ],
       },
       {
         id: "B3",
         title: "B3. Training data",
         fields: [
-          t("b3_sources", "Sources", "Datasets used, with size (segments, tokens or documents)", "N"),
-          t("b3_domains", "Domains and languages", "What the data covers and where it is thin", "P"),
+          t("b3_sources", "Sources", "Datasets used, with size (segments, tokens or documents)", "N", req),
+          t("b3_domains", "Domains and languages covered", "What the training data covers. Record thin areas and gaps in B5, not here.", "P"),
           t("b3_dates", "Date range", "Oldest and newest data; knowledge cutoff for LLMs", "P"),
           t("b3_cleaning", "Cleaning and filtering", "Deduplication, PII removal, quality filters applied", "N"),
-          t("b3_customer_data", "Customer data", "Whether any customer data was used, and under what consent", "N"),
+          t("b3_customer_data", "Customer data", "Whether any customer data was used, and under what consent", "N", req),
         ],
       },
       {
@@ -174,22 +210,47 @@ export const MODEL_PARTS: Part[] = [
             kind: "table",
             key: "b4_metrics",
             label: "Results",
-            help: "One row per metric. Every number needs a named test set and a date.",
+            help:
+              "The one source for every performance number in this pack. One row per metric and scope; every number needs a named test set, its scale and a measurement date. Rows past their re-validate date block launch.",
             tag: "N",
-            columns: ["Metric", "Test set (name, size, domain)", "This model", "Previous version", "Generic baseline", "Comparator (name + score)", "Date measured"],
+            required: true,
+            columns: [
+              col("Metric"),
+              col("Language pair / Scope"),
+              col("Test set (name, size, domain)"),
+              col("Scale", { type: "select", options: SCALES }),
+              col("This model"),
+              col("Previous version"),
+              col("Generic baseline"),
+              col("Comparator (name + score)"),
+              col("Date measured", { type: "date" }),
+              col("Re-validate by", { type: "date" }),
+            ],
           },
-          t("b4_headline", "Headline result", "The single number Sales should lead with, in one sentence", "P"),
+          t("b4_headline", "Headline result", "The single number Sales should lead with, in one sentence. It must match an approved claim in Part E.", "P", req),
         ],
       },
       {
         id: "B5",
         title: "B5. Limitations and failure modes",
         fields: [
-          t("b5_weaknesses", "Known weaknesses", "Languages, domains, formats or lengths where quality drops", "N"),
-          t("b5_errors", "Typical errors", "The most common error types, with an example each", "N"),
-          t("b5_bias", "Bias findings", "Results of fairness tests and what we did about them", "N"),
-          t("b5_safety", "Safety risks", "Hallucination, omission, toxicity or prompt-injection exposure", "N"),
-          t("b5_mitigations", "Mitigations", "Guardrails, fallbacks and review steps that contain these risks", "P"),
+          t(
+            "b5_weaknesses",
+            "Known weaknesses and gaps",
+            "The one place for quality gaps: languages, domains, formats or lengths where quality drops, and where training data is thin",
+            "N",
+            req,
+          ),
+          t("b5_error_modes", "Error modes", "The most common error types, with an example of each", "N", {
+            helpFor: { llm: "LLM: also cover hallucination, toxicity and prompt-injection exposure, with an example of each." },
+          }),
+          t("b5_bias", "Bias findings", "Results of fairness tests and what we did about them", "N", {
+            helpReplaceFor: {
+              llm: "Results of fairness tests and what we did about them",
+              custom_mt: "Gender, formality and register bias tests, and results.",
+            },
+          }),
+          t("b5_mitigations", "Mitigations", "Guardrails, fallbacks and review steps that contain these risks", "P", req),
         ],
       },
       {
@@ -207,11 +268,17 @@ export const MODEL_PARTS: Part[] = [
         id: "B7",
         title: "B7. How it runs in arbitr",
         fields: [
-          t("b7_where", "Where it appears", "Workflow steps and features that call this model", "P"),
+          t("b7_how_used", "How arbitr uses it", "Where it sits in the workflow and which features call it", "P"),
+          t("b7_routing_note", "Routing logic", "When arbitr chooses this model over alternatives", "N", { subOf: "b7_how_used" }),
           t("b7_cortex", "Cortex use", "Whether it reads from or writes to Cortex, and how", "P"),
-          t("b7_assurance", "Assurance levels", "Which assurance levels it is approved for", "P"),
-          t("b7_routing", "Routing", "When arbitr chooses this model over alternatives", "N"),
           t("b7_api", "API and integrations", "Availability via API, MCP or connectors", "P"),
+          t(
+            "b7_data_handling",
+            "Data handling",
+            "Where the model is hosted and where data is processed; whether customer content is stored or logged at runtime, and for how long; sub-processors",
+            "P",
+            req,
+          ),
         ],
       },
       {
@@ -222,9 +289,9 @@ export const MODEL_PARTS: Part[] = [
             kind: "table",
             key: "b8_versions",
             label: "Versions",
-            help: "One row per released version.",
+            help: "One row per released model version (e.g. v2.1). Not the same as pack revisions (Rev 1, Rev 2).",
             tag: "P",
-            columns: ["Version", "Date", "What changed"],
+            columns: [col("Version"), col("Date"), col("What changed")],
           },
         ],
       },
@@ -239,14 +306,12 @@ export const MODEL_PARTS: Part[] = [
         id: "C1",
         title: "C1. Custom Language Model",
         fields: [
-          t("c1_pairs", "Language pairs", "Every supported direction, with GA or Beta status per pair", "P"),
+          t("c1_pairs", "Language pairs", "Every supported direction, with GA or Beta status per pair. Scores per pair go in B4.", "P"),
           t("c1_locales", "Locale variants", "Regional variants and formality control (e.g. pt-BR vs pt-PT, tu/vous)", "P"),
           t("c1_domains", "Domains", "Content domains tuned for (legal, life sciences, marketing, UI)", "P"),
           t("c1_terminology", "Terminology", "How glossaries and do-not-translate lists are enforced; enforcement rate", "P"),
           t("c1_tm", "Translation memory", "How TM and Cortex content bias output; leverage uplift", "P"),
           t("c1_tags", "Tags and formatting", "Handling of XLIFF tags, placeholders, markup, numbers and dates; tag error rate", "N"),
-          t("c1_quality_by_pair", "Quality by pair", "COMET or MQM score per top-10 pair vs a generic engine", "N"),
-          t("c1_post_edit", "Post-edit effort", "Edit distance or minutes saved per 1,000 words, measured with real linguists", "P"),
           t("c1_migration", "Migration fit", "How it replaces engines customers use today, including ModernMT before its Dec 2026 sunset", "P"),
         ],
       },
@@ -264,7 +329,7 @@ export const MODEL_PARTS: Part[] = [
         fields: [
           t("c2_scores", "What it scores", "Content, languages and risk types it evaluates (e.g. MT quality, terminology, claims, personal data)", "P"),
           t("c2_output", "Output", "Score scale, labels or thresholds it returns, and what each one means", "P"),
-          t("c2_accuracy", "Detection accuracy", "Precision, recall and F1 per risk type, on a named test set with date", "N"),
+          t("c2_accuracy", "Detection accuracy", "Precision, recall and F1 per risk type. Record the numbers in B4.", "N"),
           t("c2_missed", "Missed issues", "False-negative rate: how often real problems pass unflagged, and on which content", "N"),
           t("c2_calibration", "Calibration", "How closely scores match observed error rates; how thresholds were chosen", "N"),
           t("c2_routing", "Routing decisions", "Which arbitr assurance levels and review routes rely on this score", "P"),
@@ -287,7 +352,7 @@ export const MODEL_PARTS: Part[] = [
           t("c3_tasks", "Tasks", "What it generates or rewrites (post-editing, style, terminology, summarisation)", "P"),
           t("c3_setup", "Base model and setup", "Foundation model, fine-tuned or prompted, provider and where it is hosted", "N"),
           t("c3_guardrails", "Prompts and guardrails", "System prompts, output constraints and validation wrapped around the model", "I"),
-          t("c3_hallucination", "Hallucination and omission", "Measured rate of added or dropped meaning, on a named test set with date", "N"),
+          t("c3_hallucination", "Hallucination and omission", "Measured rate of added or dropped meaning. Record the numbers in B4.", "N"),
           t("c3_context", "Context window", "Maximum input and output length; how long documents are split", "P"),
           t("c3_grounding", "Grounding", "Which sources it may use (Cortex, TM, glossaries) and how it is held to them", "P"),
           t("c3_injection", "Prompt-injection exposure", "How content containing instructions is handled; date of last test", "N"),
@@ -306,7 +371,6 @@ export const MODEL_PARTS: Part[] = [
         title: "C4. Custom Customer Model",
         fields: [
           t("c4_data_needed", "Data we need", "Minimum and ideal data: TM size, glossaries, style guides, approved content", "P"),
-          t("c4_onboarding", "Onboarding steps", "What the customer does, what we do, in order", "P"),
           t("c4_time_to_model", "Time to first model", "Weeks from data receipt to a model in production", "P"),
           t("c4_uplift", "Measured uplift", "Gain on the customer's own held-out content vs our generic model", "P"),
           t("c4_retraining", "Retraining", "Cadence and trigger (volume of new approved content, drift)", "P"),
@@ -325,11 +389,15 @@ export const MODEL_PARTS: Part[] = [
         id: "D1",
         title: "D1. Packaging and pricing",
         fields: [
-          t("d1_how_sold", "How it's sold", "Included in the platform, add-on SKU, or custom build fee", "N"),
-          t("d1_pricing", "Pricing basis", "Per word, per request, per model build, per language pair, or credits", "N"),
-          t("d1_credits", "Credit mapping", "How usage converts to Intelligence Credits, if applicable", "N"),
-          t("d1_sku", "SKU", "SKU code(s) and regions available", "I"),
-          t("d1_margin", "Margin", "Inference and build cost vs price", "I"),
+          t(
+            "d1_packaging",
+            "Packaging & pricing",
+            "How it's sold (included, add-on SKU or custom build fee), the pricing basis (per word, request, build, language pair or credits), and how usage converts to Intelligence Credits",
+            "N",
+            req,
+          ),
+          t("d1_sku", "SKU", "SKU code(s) and regions available", "I", req),
+          t("d1_margin", "Margin", "Inference and build cost vs price", "I", req),
         ],
       },
       {
@@ -337,21 +405,29 @@ export const MODEL_PARTS: Part[] = [
         title: "D2. Qualifying a buyer",
         fields: [
           t("d2_signals", "Best-fit signals", "What tells a rep this customer needs this model (volume, domain, regulation, current engine)", "I"),
-          t("d2_disqualifiers", "Disqualifiers", "When this model is the wrong answer", "I"),
+          t(
+            "d2_disqualifiers",
+            "Disqualifiers",
+            "When this model is the wrong answer for a buyer. Point to B2 Out of scope and B5 Known weaknesses rather than restating them.",
+            "I",
+          ),
           t("d2_questions", "Discovery questions", "Three to five questions reps should ask", "I"),
-          t("d2_objections", "Common objections", "Top objections with the evidence-backed answer to each", "N"),
+          t("d2_objections", "Common objections", "Top objections with the evidence-backed answer to each", "I"),
         ],
       },
       {
         id: "D3",
         title: "D3. Customer evaluation and onboarding",
+        readonlyFactory: { key: "a9_request_process", label: "Request process (factory-wide)" },
         fields: [
           t("d3_eval_offer", "Evaluation offer", "Pilot or bake-off on the customer's own content: scope, length, cost", "P"),
           t("d3_success", "Success criteria", "The measurable result that turns a pilot into a contract", "N"),
-          t("d3_request", "Request process", "Where a customer or rep requests the model; who picks it up; response time", "P"),
           t("d3_onboarding", "Onboarding steps", "Numbered steps from signature to live use in arbitr", "P"),
-          t("d3_deliverables", "What customers get", "Deliverables at go-live: model card, eval report, dashboards", "P"),
-          t("d3_reporting", "Ongoing reporting", "Quality reporting the customer sees after launch, and how often", "P"),
+          t("d3_onboarding_ctm", "Customer-trained build", "Extra steps for a customer-trained build: what the customer does, what we do, in order", "P", {
+            subOf: "d3_onboarding",
+            showFor: "customer_trained",
+          }),
+          t("d3_deliverables", "Deliverables and reporting", "What customers get at go-live (model card, eval report, dashboards) and the quality reporting they see after launch, and how often", "P"),
         ],
       },
       {
@@ -364,7 +440,7 @@ export const MODEL_PARTS: Part[] = [
             label: "Assets",
             help: "Say whether each asset exists, link it, and name its owner.",
             tag: "I",
-            columns: ["Asset", "Exists?", "Link", "Owner"],
+            columns: [col("Asset"), col("Exists?"), col("Link"), col("Owner")],
             presetRows: [
               "Demo script or recorded demo",
               "Before/after output samples (approved content only)",
@@ -389,9 +465,19 @@ export const MODEL_PARTS: Part[] = [
             kind: "table",
             key: "e_claims",
             label: "Claims register",
-            help: "Exact wording only. A claim with no evidence (section + test set) cannot be approved.",
+            help:
+              "Exact wording only. A claim counts as approved only when it has Evidence (section + test set) and Approved by. Every public number or comparison must match an approved claim.",
             tag: "P",
-            columns: ["Claim (exact wording)", "Model or factory", "Evidence (section + test set)", "Tag", "Approved by", "Review by"],
+            required: true,
+            columns: [
+              col("Claim (exact wording)"),
+              col("Model or factory"),
+              col("Evidence (section + test set)"),
+              col("Tag"),
+              col("Approved by"),
+              col("Review by"),
+              col("Source field"),
+            ],
           },
         ],
       },
@@ -415,14 +501,30 @@ export const ALL_ROLES = [
 ] as const;
 
 export type Answers = Record<string, string | string[][]>;
+// Field key -> reason it doesn't apply (at least 10 characters).
+export type NA = Record<string, string>;
+export const NA_MIN = 10;
 
 export function partsFor(kind: "factory" | "model", modelTypes: string[]): Part[] {
   if (kind === "factory") return FACTORY_PARTS;
-  return MODEL_PARTS.filter((p) => !p.showFor || modelTypes.includes(p.showFor));
+  return MODEL_PARTS.filter((p) => !p.showFor || modelTypes.includes(p.showFor)).map((p) => ({
+    ...p,
+    sections: p.sections.map((s) => ({ ...s, fields: s.fields.filter((f) => !f.showFor || modelTypes.includes(f.showFor)) })),
+  }));
 }
 
 export function fieldsFor(kind: "factory" | "model", modelTypes: string[]): Field[] {
   return partsFor(kind, modelTypes).flatMap((p) => p.sections.flatMap((s) => s.fields));
+}
+
+export function helpFor(field: Field, modelTypes: string[]): string {
+  let help = field.help;
+  if (field.helpReplaceFor) {
+    const hits = Object.entries(field.helpReplaceFor).filter(([type]) => modelTypes.includes(type)).map(([, h]) => h!);
+    if (hits.length) help = [...new Set(hits)].join(" ");
+  }
+  const extra = Object.entries(field.helpFor ?? {}).filter(([type]) => modelTypes.includes(type)).map(([, h]) => h);
+  return [help, ...extra].join(" ");
 }
 
 export function isAnswered(field: Field, answers: Answers): boolean {
@@ -433,11 +535,23 @@ export function isAnswered(field: Field, answers: Answers): boolean {
   return v.some((row) => row.slice(start).some((c) => c && c.trim().length > 0));
 }
 
-export function completion(kind: "factory" | "model", modelTypes: string[], answers: Answers) {
+export const isNA = (field: Field, na: NA = {}) => (na[field.key]?.trim().length ?? 0) >= NA_MIN;
+export const isDone = (field: Field, answers: Answers, na: NA = {}) => isAnswered(field, answers) || isNA(field, na);
+
+export function completion(kind: "factory" | "model", modelTypes: string[], answers: Answers, na: NA = {}) {
   const fields = fieldsFor(kind, modelTypes);
-  const done = fields.filter((f) => isAnswered(f, answers)).length;
-  return { done, total: fields.length };
+  const req = fields.filter((f) => f.required);
+  const opt = fields.filter((f) => !f.required);
+  return {
+    requiredDone: req.filter((f) => isDone(f, answers, na)).length,
+    requiredTotal: req.length,
+    optionalDone: opt.filter((f) => isDone(f, answers, na)).length,
+    optionalTotal: opt.length,
+  };
 }
+
+export const completionText = (c: ReturnType<typeof completion>) =>
+  c.requiredTotal ? `Required: ${c.requiredDone}/${c.requiredTotal} · Optional: ${c.optionalDone}/${c.optionalTotal}` : `Answered: ${c.optionalDone}/${c.optionalTotal}`;
 
 export function emptyTable(field: TableField): string[][] {
   if (field.presetRows) return field.presetRows.map((r) => [r, ...field.columns.slice(1).map(() => "")]);
@@ -460,9 +574,16 @@ export function typeLabels(modelTypes: string[], otherType?: string): string {
   );
 }
 
+export function findField(key: string): Field | undefined {
+  for (const part of [...FACTORY_PARTS, ...MODEL_PARTS]) for (const s of part.sections) for (const f of s.fields) if (f.key === key) return f;
+  return undefined;
+}
+
 // "b4_headline" -> "Headline result" (for comment references).
-export function fieldLabel(key: string): string {
-  for (const part of [...FACTORY_PARTS, ...MODEL_PARTS])
-    for (const s of part.sections) for (const f of s.fields) if (f.key === key) return f.label;
-  return key;
+export const fieldLabel = (key: string) => findField(key)?.label ?? key;
+
+// Sections a field belongs to, e.g. "B4" (used in flag messages).
+export function sectionOf(key: string): string {
+  for (const part of [...FACTORY_PARTS, ...MODEL_PARTS]) for (const s of part.sections) if (s.fields.some((f) => f.key === key)) return s.id;
+  return "";
 }

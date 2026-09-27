@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createPack } from "../lib/actions";
-import { completion, MODEL_TYPES, typeLabels } from "../lib/fields";
+import { completion, completionText, MODEL_TYPES, typeLabels } from "../lib/fields";
 import { requireName } from "../lib/session";
 import { listPacks } from "../lib/store";
 import Header, { ErrorNote, StatusPill } from "./Header";
@@ -24,14 +24,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
 
         <div className="pack-list">
           {packs.map((p) => {
-            const c = completion(p.kind, p.modelTypes, p.answers);
-            const pct = Math.round((c.done / c.total) * 100);
+            const c = completion(p.kind, p.modelTypes, p.answers, p.na);
+            const pct = c.requiredTotal
+              ? Math.round((c.requiredDone / c.requiredTotal) * 100)
+              : Math.round((c.optionalDone / Math.max(c.optionalTotal, 1)) * 100);
             return (
               <Link key={p.id} href={`/packs/${p.id}`} className="pack-card">
                 <div className="pack-card-top">
                   <span className="pack-kind">{p.kind === "factory" ? "Shared · Part A" : "Model"}</span>
                   <StatusPill status={p.status} />
                 </div>
+                {p.needsReview && <span className="pill s-changes_requested needs-review">Needs review</span>}
                 <div className="pack-name">{p.name}</div>
                 {p.kind === "model" && (
                   <div className="muted small">
@@ -40,7 +43,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                 )}
                 <div className="bar"><span style={{ width: `${pct}%` }} /></div>
                 <div className="muted small">
-                  {c.done} of {c.total} answered · {p.version ? `v${p.version} published` : "never published"}
+                  {completionText(c)} · {p.version ? `Rev ${p.version} published` : "never published"}
                 </div>
               </Link>
             );
